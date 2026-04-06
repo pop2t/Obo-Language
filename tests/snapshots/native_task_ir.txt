@@ -1,0 +1,6 @@
+define i32 @main() {
+  %t3 = call i8* @obo_task_spawn(i8* %t2)
+  %t8 = call i8* @obo_task_spawn(i8* %t7)
+  call void @obo_task_wait(i8* %t10)
+  call void @obo_task_wait_all()
+  ret i32 0

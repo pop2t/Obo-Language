@@ -1,0 +1,5 @@
+use square from mathlib;
+
+function main() {
+    show square(7);
+}

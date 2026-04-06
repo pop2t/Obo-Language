@@ -1,0 +1,54 @@
+// Native test for generators / iterators with emit
+
+function fibonacci()
+{
+    a = 0;
+    b = 1;
+    forever
+    {
+        emit a;
+        next = a + b;
+        a = b;
+        b = next;
+    }
+}
+
+function count_down(start)
+{
+    i = start;
+    while (i > 0)
+    {
+        emit i;
+        i = i - 1;
+    }
+}
+
+function first_few()
+{
+    emit 10;
+    emit 20;
+    emit 30;
+}
+
+function main()
+{
+    for (n in fibonacci())
+    {
+        if (n > 100) { stop; }
+        show n;
+    }
+
+    show "countdown:";
+    for (x in count_down(5))
+    {
+        show x;
+    }
+
+    show "first_few:";
+    for (v in first_few())
+    {
+        show v;
+    }
+
+    show "done";
+}

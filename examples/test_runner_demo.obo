@@ -1,0 +1,49 @@
+// Demo: obo test runner
+
+@test
+function test_addition()
+{
+    assert(2 + 3 == 5);
+    assert(100 + 200 == 300, "large addition");
+}
+
+@test
+function test_strings()
+{
+    name = "obo";
+    assert(name == "obo", "string equality");
+    assert("hello " + "world" == "hello world", "concatenation");
+}
+
+@test
+function test_lists()
+{
+    items = [1, 2, 3];
+    assert(items.count == 3, "list count");
+    assert(items.first == 1, "first item");
+}
+
+function helper(x)
+{
+    out x * 2;
+}
+
+@test
+function test_helper_call()
+{
+    assert(helper(5) == 10, "double 5");
+    assert(helper(0) == 0, "double 0");
+}
+
+@test
+function test_maps()
+{
+    m = ["name": "obo", "version": 1];
+    assert(m.get("name") == "obo", "map get");
+    assert(m.count == 2, "map count");
+}
+
+function main()
+{
+    show "Run me with: obo test examples/test_runner_demo.obo";
+}

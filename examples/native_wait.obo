@@ -1,0 +1,14 @@
+function main() {
+    first = run action() {
+        show "first task";
+    };
+
+    run action() {
+        show "queued task";
+    };
+
+    wait for first;
+    show "between";
+    wait for all;
+    show "done";
+}

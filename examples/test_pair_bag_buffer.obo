@@ -1,0 +1,48 @@
+function main() {
+    // Test pair
+    p = pair(10, 20);
+    show p.first;
+    show p.second;
+
+    // Test bag (heterogeneous)
+    b = bag(1, 2, 3);
+    show b.count;
+    show b.has(2);
+    b2 = b.add(42);
+    show b2.count;
+    b3 = b2.remove(2);
+    show b3.count;
+    show b3.has(2);
+
+    // Iterate bag
+    for (x in bag(10, 20, 30)) {
+        show x;
+    }
+
+    // Test buffer
+    buf = buffer(4);
+    show buf.length;
+    buf2 = buf.set(0, 65);
+    buf3 = buf2.set(1, 66);
+    show buf3.get(0);
+    show buf3.get(1);
+
+    // Iterate buffer bytes
+    for (b in buffer(3)) {
+        show b;
+    }
+
+    // Test slice
+    nums = [1, 2, 3, 4, 5];
+    s = slice(nums, 1, 4);
+    show s;
+
+    // Test empty bag
+    empty = bag();
+    show empty.count;
+    show empty.empty;
+
+    show "done";
+}
+
+main();

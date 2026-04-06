@@ -1,0 +1,25 @@
+bridge "c"
+{
+    function puts(s as text) out number;
+    function abs(x as number) out number;
+    function printf(fmt as text, ...) out number;
+    function malloc(size as number) out pointer;
+    function free(ptr as pointer);
+}
+
+function main()
+{
+    metal
+    {
+        puts("=== bridge FFI test ===");
+
+        result = abs(-99);
+        show result;
+
+        printf("variadic: %lld + %lld = %lld\n", 10, 20, 30);
+
+        ptr = malloc(64);
+        free(ptr);
+        puts("malloc/free ok");
+    }
+}

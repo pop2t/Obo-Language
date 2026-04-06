@@ -1,0 +1,10 @@
+// Native build: call another function (i64 only)
+function triple(x)
+{
+    out x * 3;
+}
+
+function main()
+{
+    show triple(7);
+}

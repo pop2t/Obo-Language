@@ -1,0 +1,8 @@
+// Native build: text + text (uses obo_str_concat in runtime/obo_rt.c)
+function main()
+{
+    show "Hello, " + "native" + " OBO!";
+    a = "foo";
+    b = "bar";
+    show a + b;
+}

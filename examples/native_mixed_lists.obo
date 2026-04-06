@@ -1,0 +1,10 @@
+// Mixed-type lists: heterogeneous elements boxed into OboValue
+function main() {
+    mixed = [1, 3.14, "hello"];
+    show mixed;
+    show mixed.count;
+
+    nums = [10, 20, 30];
+    show nums;
+    show nums.count;
+}

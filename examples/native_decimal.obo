@@ -1,0 +1,12 @@
+function main()
+{
+    pi = 3.14159;
+    r = 5.0;
+    area = pi * r * r;
+    show area;
+    show pi + 1.0;
+    show 10 - 2.5;
+    show "area is " + area;
+    show -pi;
+    show area > 50.0;
+}

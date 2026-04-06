@@ -1,0 +1,108 @@
+/// A temperature measurement with unit conversion.
+entity Temperature {
+    degrees as number;
+    scale as text;
+}
+
+/// Represents compass directions.
+choice Direction {
+    North,
+    South,
+    East,
+    West
+}
+
+/// A geometric shape with area calculation.
+choice Shape {
+    Circle(radius),
+    Rectangle(width, height),
+    Point
+}
+
+/// Any object that can be moved in 2D space.
+trait Movable {
+    x;
+    y;
+    function moveTo(newX, newY);
+}
+
+/// A game character with position and health.
+/// Supports movement via the Movable trait.
+actor Player has Movable {
+    public x = 0;
+    public y = 0;
+    health = 100;
+
+    /// The player's display name.
+    public event onMove;
+
+    /// Creates a new player at a position.
+    /// @param startX The starting X coordinate.
+    /// @param startY The starting Y coordinate.
+    public function init(startX, startY) {
+        self.x = startX;
+        self.y = startY;
+    }
+
+    /// Moves the player to new coordinates.
+    /// @param newX Target X position.
+    /// @param newY Target Y position.
+    public function moveTo(newX, newY) {
+        self.x = newX;
+        self.y = newY;
+        emit onMove();
+    }
+
+    /// Applies damage to the player.
+    /// @param amount The damage amount to apply.
+    /// @out The remaining health after damage.
+    public function takeDamage(amount as number) {
+        self.health = self.health - amount;
+        if (self.health < 0) {
+            self.health = 0;
+        }
+        out self.health;
+    }
+
+    public property isAlive {
+        get {
+            out self.health > 0;
+        }
+    }
+}
+
+/// Maximum allowed players in a game session.
+const MAX_PLAYERS = 16;
+
+/// Calculates the area of a circle.
+/// @param radius The radius of the circle.
+/// @out The calculated area.
+function circleArea(radius as number) {
+    out 3.14159 * radius * radius;
+}
+
+/// Calculates distance between two points.
+/// @param x1 First point X.
+/// @param y1 First point Y.
+/// @param x2 Second point X.
+/// @param y2 Second point Y.
+/// @out The Euclidean distance.
+function distance(x1 as number, y1 as number, x2 as number, y2 as number) {
+    dx = x2 - x1;
+    dy = y2 - y1;
+    out Math.sqrt(dx * dx + dy * dy);
+}
+
+/// Formats a greeting message.
+/// @param name The person's name.
+/// @param title An optional title prefix.
+function greet(name as text, title as text = "friend") {
+    show "Hello, {title} {name}!";
+}
+
+function main() {
+    p = Player {};
+    p.init(10, 20);
+    show "Player at ({p.x}, {p.y})";
+    show "Area: " + circleArea(5);
+}

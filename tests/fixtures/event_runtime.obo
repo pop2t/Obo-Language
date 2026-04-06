@@ -1,0 +1,39 @@
+actor Player
+{
+    public event onDamage;
+    public event onDeath;
+
+    function takeDamage(amount)
+    {
+        health = health - amount;
+        emit onDamage(amount);
+
+        if (health <= 0)
+        {
+            emit onDeath();
+        }
+    }
+}
+
+function main()
+{
+    prefix = "damage=";
+
+    player = Player
+    {
+        health = 5;
+    };
+
+    player.onDamage.listen(action(amount)
+    {
+        show prefix + amount;
+    });
+
+    player.onDeath.listen(action()
+    {
+        show "dead";
+    });
+
+    player.takeDamage(3);
+    player.takeDamage(2);
+}

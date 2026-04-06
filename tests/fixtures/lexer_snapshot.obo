@@ -1,0 +1,4 @@
+function greet(name text)
+{
+    show "Hello, " + name;
+}

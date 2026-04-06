@@ -1,0 +1,15 @@
+bridge "c"
+{
+    function puts(s as text) out number;
+    function abs(x as number) out number;
+}
+
+function main()
+{
+    metal
+    {
+        puts("hello from bridge!");
+        result = abs(-42);
+        show result;
+    }
+}

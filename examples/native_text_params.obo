@@ -1,0 +1,10 @@
+// Native: text parameters and text return via `out`
+function greet(name text)
+{
+    out "Hello, " + name + "!";
+}
+
+function main()
+{
+    show greet("OBO");
+}

@@ -1,0 +1,268 @@
+// ========================================
+// OBO Standard Library Test Suite
+// Phase 6: All system actors & methods
+// ========================================
+
+function main() {
+
+    // ── LIST OPERATIONS ──────────────────
+
+    show "=== LIST OPERATIONS ===";
+
+    numbers = [5, 3, 1, 4, 2];
+    show "Original: " + numbers;
+    show "Count: " + numbers.count;
+    show "First: " + numbers.first;
+    show "Last: " + numbers.last;
+    show "Empty: " + numbers.empty;
+
+    sorted = numbers.sort();
+    show "Sorted: " + sorted;
+
+    reversed = numbers.reverse();
+    show "Reversed: " + reversed;
+
+    added = numbers.add(6);
+    show "After add(6): " + added;
+
+    inserted = numbers.insert(0, 99);
+    show "After insert(0, 99): " + inserted;
+
+    removed = numbers.remove(3);
+    show "After remove(3): " + removed;
+
+    removedAt = numbers.removeAt(0);
+    show "After removeAt(0): " + removedAt;
+
+    idx = numbers.indexOf(4);
+    show "indexOf(4): " + idx;
+
+    has3 = numbers.contains(3);
+    show "contains(3): " + has3;
+
+    joined = numbers.join(" - ");
+    show "Joined: " + joined;
+
+    taken = numbers.take(3);
+    show "Take 3: " + taken;
+
+    skipped = numbers.skip(2);
+    show "Skip 2: " + skipped;
+
+    sliced = numbers.slice(1, 4);
+    show "Slice(1,4): " + sliced;
+
+    nested = [[1, 2], [3, 4], [5]];
+    flat = nested.flat();
+    show "Flat: " + flat;
+
+    unique = [1, 2, 2, 3, 3, 3].distinct;
+    show "Distinct: " + unique;
+
+    // higher-order
+    evens = numbers.filter(n => n % 2 == 0);
+    show "Evens: " + evens;
+
+    doubled = numbers.map(n => n * 2);
+    show "Doubled: " + doubled;
+
+    total = numbers.reduce(0, (acc, n) => acc + n);
+    show "Sum: " + total;
+
+    hasEven = numbers.any(n => n % 2 == 0);
+    show "Any even: " + hasEven;
+
+    allPositive = numbers.all(n => n > 0);
+    show "All positive: " + allPositive;
+
+
+    // ── MAP OPERATIONS ───────────────────
+
+    show "";
+    show "=== MAP OPERATIONS ===";
+
+    scores = ["alice": 95, "bob": 87, "carol": 92];
+    show "Scores: " + scores;
+    show "Count: " + scores.count;
+    show "Empty: " + scores.empty;
+    show "Keys: " + scores.keys;
+    show "Values: " + scores.values;
+
+    aliceScore = scores.get("alice");
+    show "Alice: " + aliceScore;
+
+    missing = scores.get("dave", 0);
+    show "Dave (default 0): " + missing;
+
+    hasAlice = scores.has("alice");
+    show "Has alice: " + hasAlice;
+
+    updated = scores.set("dave", 88);
+    show "After set dave: " + updated;
+
+    removed2 = scores.remove("bob");
+    show "After remove bob: " + removed2;
+
+
+    // ── TEXT OPERATIONS ──────────────────
+
+    show "";
+    show "=== TEXT OPERATIONS ===";
+
+    greeting = "  Hello, World!  ";
+    show "Original: '" + greeting + "'";
+    show "Trim: '" + greeting.trim + "'";
+    show "TrimStart: '" + greeting.trimStart + "'";
+    show "TrimEnd: '" + greeting.trimEnd + "'";
+
+    msg = "Hello, World!";
+    show "Upper: " + msg.upper;
+    show "Lower: " + msg.lower;
+    show "Length: " + msg.length;
+    show "Empty: " + msg.empty;
+    show "Reversed: " + msg.reversed;
+
+    show "StartsWith 'Hello': " + msg.startsWith("Hello");
+    show "EndsWith '!': " + msg.endsWith("!");
+    show "Contains 'World': " + msg.contains("World");
+    show "IndexOf 'World': " + msg.indexOf("World");
+
+    replaced = msg.replace("World", "Obo");
+    show "Replace: " + replaced;
+
+    sub = msg.substring(0, 5);
+    show "Substring(0,5): " + sub;
+
+    parts = msg.split(", ");
+    show "Split: " + parts;
+
+    repeated = "ha".repeat(3);
+    show "Repeat: " + repeated;
+
+    padded = "42".padLeft(6, '0');
+    show "PadLeft: " + padded;
+
+    padRight = "hi".padRight(10, '.');
+    show "PadRight: " + padRight;
+
+    chars = "abc".chars;
+    show "Chars: " + chars;
+
+    words = "one two three".words;
+    show "Words: " + words;
+
+    multiline = "line1\nline2\nline3";
+    lines = multiline.lines;
+    show "Lines: " + lines;
+
+    numFromStr = "42".toNumber();
+    show "ToNumber: " + numFromStr;
+
+    decFromStr = "3.14".toDecimal();
+    show "ToDecimal: " + decFromStr;
+
+
+    // ── MATH OPERATIONS ──────────────────
+
+    show "";
+    show "=== MATH OPERATIONS ===";
+
+    show "Pi: " + Math.pi;
+    show "E: " + Math.e;
+
+    show "abs(-5): " + Math.abs(-5);
+    show "abs(3.7): " + Math.abs(3.7);
+
+    show "floor(3.7): " + Math.floor(3.7);
+    show "ceil(3.2): " + Math.ceil(3.2);
+    show "round(3.5): " + Math.round(3.5);
+
+    show "sqrt(16): " + Math.sqrt(16);
+    show "pow(2, 10): " + Math.pow(2, 10);
+
+    show "sin(0): " + Math.sin(0);
+    show "cos(0): " + Math.cos(0);
+    show "tan(0): " + Math.tan(0);
+
+    show "log(1): " + Math.log(1);
+    show "log10(100): " + Math.log10(100);
+
+    show "min(3, 7): " + Math.min(3, 7);
+    show "max(3, 7): " + Math.max(3, 7);
+    show "clamp(15, 0, 10): " + Math.clamp(15, 0, 10);
+
+    show "sign(-42): " + Math.sign(-42);
+    show "sign(0): " + Math.sign(0);
+    show "sign(7): " + Math.sign(7);
+
+    show "lerp(0, 100, 0.5): " + Math.lerp(0, 100, 0.5);
+
+    r = Math.random();
+    show "random(): " + r;
+
+    ri = Math.randomInt(1, 100);
+    show "randomInt(1, 100): " + ri;
+
+
+    // ── CONVERT OPERATIONS ───────────────
+
+    show "";
+    show "=== CONVERT OPERATIONS ===";
+
+    show "toNumber('123'): " + Convert.toNumber("123");
+    show "toNumber(3.14): " + Convert.toNumber(3.14);
+    show "toNumber(true): " + Convert.toNumber(true);
+    show "toDecimal('3.14'): " + Convert.toDecimal("3.14");
+    show "toText(42): " + Convert.toText(42);
+    show "toFlag(1): " + Convert.toFlag(1);
+    show "toFlag(0): " + Convert.toFlag(0);
+    show "toChar(65): " + Convert.toChar(65);
+
+
+    // ── TIME OPERATIONS ──────────────────
+
+    show "";
+    show "=== TIME OPERATIONS ===";
+
+    now = Time.now;
+    show "Time.now (ms): " + now;
+    show "Time.nowSeconds: " + Time.nowSeconds;
+
+    Time.startTimer();
+    x = 0;
+    count (i = 0, 1000) {
+        x = x + i;
+    }
+    elapsed = Time.stopTimer();
+    show "Timer (loop 1000): " + elapsed + "ms";
+
+
+    // ── FILE OPERATIONS ──────────────────
+
+    show "";
+    show "=== FILE OPERATIONS ===";
+
+    File.write("/tmp/obo_test.txt", "Hello from Obo!\nLine 2\nLine 3");
+    show "Wrote file";
+
+    exists = File.exists("/tmp/obo_test.txt");
+    show "File exists: " + exists;
+
+    content = File.read("/tmp/obo_test.txt");
+    show "Read back: " + content;
+
+    fileLines = File.readLines("/tmp/obo_test.txt");
+    show "Lines: " + fileLines;
+
+    File.append("/tmp/obo_test.txt", "\nLine 4 appended");
+    content2 = File.read("/tmp/obo_test.txt");
+    show "After append: " + content2;
+
+    File.delete("/tmp/obo_test.txt");
+    exists2 = File.exists("/tmp/obo_test.txt");
+    show "After delete exists: " + exists2;
+
+
+    show "";
+    show "=== ALL STDLIB TESTS PASSED ===";
+}

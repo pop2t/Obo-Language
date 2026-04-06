@@ -1,0 +1,18 @@
+extend number {
+    function doubled(n as number) {
+        out n * 2;
+    }
+
+    function isEven(n as number) {
+        out n % 2 == 0;
+    }
+}
+
+function main() {
+    x = 21;
+    show x.doubled();
+    show x.isEven();
+
+    y = 4;
+    show y.isEven();
+}

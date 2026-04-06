@@ -1,0 +1,19 @@
+function main() {
+    counter = atomic of number(0);
+
+    run action() {
+        counter.add(10);
+    };
+
+    run action() {
+        counter.add(20);
+    };
+    
+    run action() {
+        counter.add(5);
+    };
+
+    wait for all;
+    show "counter: {counter.value}";
+    show "done";
+}

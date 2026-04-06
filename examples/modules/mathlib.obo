@@ -1,0 +1,11 @@
+function square(n as number) {
+    out n * n;
+}
+
+function cube(n as number) {
+    out n * n * n;
+}
+
+function negate(n as number) {
+    out 0 - n;
+}

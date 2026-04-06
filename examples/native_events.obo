@@ -1,0 +1,22 @@
+actor Button
+{
+    public event onClick;
+
+    function click()
+    {
+        emit onClick();
+    }
+}
+
+function main()
+{
+    btn = Button {};
+
+    btn.onClick.listen(action()
+    {
+        show "clicked!";
+    });
+
+    btn.click();
+    btn.click();
+}

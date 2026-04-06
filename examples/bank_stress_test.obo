@@ -1,0 +1,357 @@
+/// OBO Stress Test — Concurrent Bank Simulation
+/// Tests: actors, template/final, channels, atomic, events,
+///        possible/else, properties, closures, collections,
+///        check/is, string interpolation, @test
+
+// ─── Data types ──────────────────────────────────────────────
+
+choice Currency
+{
+    USD,
+    EUR,
+    GBP
+}
+
+entity Transaction
+{
+    from_id;
+    to_id;
+    amount;
+    currency;
+    status;
+}
+
+// ─── Template actor (abstract base) ─────────────────────────
+
+template actor Account
+{
+    public id;
+    public owner;
+    public balance = 0;
+    public fee_pct = 0;
+
+    function deposit(amount)
+    {
+        if (amount <= 0)
+        {
+            show "Warning: " + owner + " can't deposit " + amount;
+            out false;
+        }
+        balance = balance + amount;
+        show owner + ": Deposited " + amount + " -> balance: " + balance;
+        out true;
+    }
+
+    function withdraw(amount)
+    {
+        fee = amount * fee_pct;
+        total = amount + fee;
+        if (total > balance)
+        {
+            show owner + ": Can't withdraw " + amount + " (fee: " + fee + ") — only have " + balance;
+            out false;
+        }
+        balance = balance - total;
+        show owner + ": Withdrew " + amount + " (fee: " + fee + ") -> balance: " + balance;
+        out true;
+    }
+
+    property summary
+    {
+        get
+        {
+            out owner + " (#" + id + "): " + balance + " available";
+        }
+    }
+}
+
+// ─── Concrete account types ─────────────────────────────────
+
+actor CheckingAccount is Account
+{
+    shared function create(cid, cowner, initial)
+    {
+        out CheckingAccount { id = cid; owner = cowner; balance = initial; fee_pct = 0.01; };
+    }
+}
+
+actor SavingsAccount is Account
+{
+    public interest_rate = 0.05;
+
+    shared function create(sid, sowner, initial)
+    {
+        out SavingsAccount { id = sid; owner = sowner; balance = initial; fee_pct = 0.005; interest_rate = 0.05; };
+    }
+
+    function apply_interest()
+    {
+        earned = balance * interest_rate;
+        balance = balance + earned;
+        show owner + ": Interest +" + earned + " -> balance: " + balance;
+    }
+}
+
+final actor VaultAccount is Account
+{
+    shared function create(vid, vowner, initial)
+    {
+        out VaultAccount { id = vid; owner = vowner; balance = initial; fee_pct = 0; };
+    }
+}
+
+// ─── Bank with event system ─────────────────────────────────
+
+actor Bank
+{
+    public name;
+    public accounts;
+    public tx_count;
+    public total_volume;
+    public event onTransaction;
+    public event onAlert;
+
+    shared function create(bname)
+    {
+        out Bank
+        {
+            name = bname;
+            accounts = ["_placeholder": 0];
+            tx_count = atomic of number(0);
+            total_volume = atomic of number(0);
+        };
+    }
+
+    function add_account(account)
+    {
+        accounts[account.id] = account;
+        show name + ": Account #" + account.id + " (" + account.owner + ") added";
+    }
+
+    function get_account(aid)
+    {
+        out accounts[aid];
+    }
+
+    function transfer(from_id, to_id, amount)
+    {
+        possible
+        {
+            from_acc = accounts[from_id];
+            to_acc = accounts[to_id];
+
+            ok = from_acc.withdraw(amount);
+            if (ok)
+            {
+                to_acc.deposit(amount);
+                tx_count.add(1);
+                total_volume.add(amount);
+
+                tx = Transaction
+                {
+                    from_id = from_id;
+                    to_id = to_id;
+                    amount = amount;
+                    currency = Currency.USD;
+                    status = "completed";
+                };
+                emit onTransaction(tx);
+                show "Transfer OK: " + amount + " from #" + from_id + " to #" + to_id;
+                out true;
+            }
+            else
+            {
+                emit onAlert("Transfer failed: insufficient funds");
+                out false;
+            }
+        }
+        else (err)
+        {
+            emit onAlert("Transfer error: " + err);
+            out false;
+        }
+    }
+
+    function report()
+    {
+        show "";
+        show "=== " + name + " — Bank Report ===";
+        show "Total transactions: " + tx_count.load();
+        show "Total volume: " + total_volume.load();
+        show "================================";
+    }
+}
+
+// ─── Data analysis using closures ───────────────────────────
+
+function analyze_balances(accs)
+{
+    show "";
+    show "--- Account Analysis ---";
+
+    total = 0;
+    for (a in accs)
+    {
+        show "  " + a.summary;
+        total = total + a.balance;
+    }
+    show "  Total across all accounts: " + total;
+
+    // Use closures for filtering
+    big_accounts = accs.filter(a => a.balance > 1000);
+    show "  Accounts over 1000: " + big_accounts.count;
+}
+
+// ─── Main program ───────────────────────────────────────────
+
+function main()
+{
+    show "======================================";
+    show "  OBO Bank — Concurrent Stress Test   ";
+    show "======================================";
+
+    // Create bank
+    bank = Bank.create("OBO National Bank");
+
+    // Listen for events
+    bank.onTransaction.listen(action(tx)
+    {
+        show "AUDIT: " + tx.amount + " from #" + tx.from_id + " to #" + tx.to_id + " (" + tx.status + ")";
+    });
+
+    bank.onAlert.listen(action(msg)
+    {
+        show "ALERT: " + msg;
+    });
+
+    // Create accounts of different types
+    alice = CheckingAccount.create(1, "Alice", 1000);
+    bob = SavingsAccount.create(2, "Bob", 2000);
+    vault = VaultAccount.create(3, "Vault", 5000);
+
+    bank.add_account(alice);
+    bank.add_account(bob);
+    bank.add_account(vault);
+
+    // Direct operations
+    show "";
+    show "-- Direct Operations --";
+    alice.deposit(500);
+    bob.apply_interest();
+    vault.deposit(1000);
+
+    // Test error handling
+    show "";
+    show "-- Error Handling --";
+    alice.withdraw(10000);
+    alice.deposit(-50);
+
+    // Transfers
+    show "";
+    show "-- Transfers --";
+    bank.transfer(1, 2, 100);
+    bank.transfer(2, 3, 50);
+    bank.transfer(3, 1, 25);
+
+    // Choice pattern matching
+    show "";
+    show "-- Currency Check --";
+    curr = Currency.USD;
+    check (curr)
+    {
+        is USD { show "US Dollars"; }
+        is EUR { show "Euros"; }
+        is GBP { show "British Pounds"; }
+    }
+
+    // Possible/else error handling
+    show "";
+    show "-- Safe Transfer Test --";
+    possible
+    {
+        bank.transfer(1, 99, 50);
+    }
+    else (err)
+    {
+        show "Caught error: " + err;
+    }
+
+    // Analysis
+    all_accounts = [alice, bob, vault];
+    analyze_balances(all_accounts);
+
+    // Final report
+    bank.report();
+
+    // Concurrent tasks with channels
+    show "";
+    show "-- Concurrent Tasks --";
+    ch = channel;
+
+    task1 = run action()
+    {
+        ch.send("task-1 done");
+    };
+
+    task2 = run action()
+    {
+        ch.send("task-2 done");
+    };
+
+    wait for task1;
+    wait for task2;
+
+    show "All tasks completed";
+
+    show "";
+    show "All done!";
+}
+
+main();
+
+// ─── Tests ──────────────────────────────────────────────────
+
+@test
+function test_checking_fees()
+{
+    acc = CheckingAccount.create(99, "Test", 1000);
+    acc.withdraw(100);
+    // 100 + 1% fee (1.0) = 101 withdrawn, balance = 899
+    assert(acc.balance == 899);
+}
+
+@test
+function test_savings_interest()
+{
+    acc = SavingsAccount.create(99, "Test", 1000);
+    acc.apply_interest();
+    // 1000 * 0.05 = 50 interest
+    assert(acc.balance == 1050);
+}
+
+@test
+function test_vault_no_fees()
+{
+    acc = VaultAccount.create(99, "Test", 1000);
+    acc.withdraw(500);
+    // No fee on vault
+    assert(acc.balance == 500);
+}
+
+@test
+function test_overdraft_protection()
+{
+    acc = CheckingAccount.create(99, "Test", 100);
+    result = acc.withdraw(200);
+    assert(result == false);
+    assert(acc.balance == 100);
+}
+
+@test
+function test_negative_deposit()
+{
+    acc = CheckingAccount.create(99, "Test", 100);
+    result = acc.deposit(-50);
+    assert(result == false);
+    assert(acc.balance == 100);
+}

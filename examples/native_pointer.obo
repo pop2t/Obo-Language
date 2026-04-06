@@ -1,0 +1,9 @@
+// Test pointer.alloc and pointer.free in native mode
+
+function main() {
+    ptr = pointer.alloc(1024);
+    show ptr;
+    pointer.free(ptr);
+    show "freed";
+    show "done";
+}

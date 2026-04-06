@@ -1,0 +1,8 @@
+// Native parity smoke: map literal, Math call, list count.
+function main()
+{
+    m = ["a": 1, "b": 2];
+    show m.count;
+    x = Math.abs(-7);
+    show x;
+}

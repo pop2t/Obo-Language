@@ -1,0 +1,120 @@
+use Math;
+use Collections;
+
+/// A full demonstration of OBO syntax.
+/// This exercises most token types.
+
+choice Tool
+{
+    Hammer,
+    Wrench,
+    Screwdriver
+}
+
+entity Stats
+{
+    health;
+    speed;
+    strength;
+}
+
+trait Workable
+{
+    function work();
+}
+
+actor Character
+{
+    public name;
+    public stats;
+
+    public function greet()
+    {
+        show "I'm {name}";
+    }
+}
+
+actor Farmer is Character has Workable
+{
+    public tool;
+    public harvested = 0;
+
+    shared function create(farmerName as text)
+    {
+        out Farmer
+        {
+            name = farmerName;
+            tool = Tool.Hammer;
+            stats = Stats { health = 100; speed = 5; strength = 8; };
+        };
+    }
+
+    function work()
+    {
+        check (tool)
+        {
+            is Hammer { show "{name} hammers away!"; }
+            is Wrench { show "{name} tightens bolts!"; }
+            is Screwdriver { show "{name} screws things in!"; }
+        }
+        harvested = harvested + 1;
+    }
+
+    public property isHealthy
+    {
+        get { out stats.health > 50; }
+    }
+}
+
+const MAX_SCORE = 100;
+
+function main()
+{
+    farmer = Farmer.create("Obo");
+    farmer.greet();
+
+    scores = [85, 42, 91, 37, 68];
+    passing = scores.filter(s => s >= 50);
+    show "Passing: {passing}";
+
+    total = 0;
+    entries = 0;
+
+    forever
+    {
+        prompt "Enter score or 'done'" into input;
+
+        if (input is "done") { stop; }
+
+        score = (number)input if possible else null;
+
+        if (score is null)
+        {
+            show "Invalid number";
+            restart;
+        }
+
+        if (score < 0 or score > MAX_SCORE)
+        {
+            show "Out of range";
+            restart;
+        }
+
+        total = total + score;
+        entries = entries + 1;
+    }
+
+    if (entries is 0)
+    {
+        show "No data entered";
+        out;
+    }
+
+    avg = total / entries;
+
+    check (avg)
+    {
+        is < 50  { show "Average: Fail"; }
+        is >= 50 { show "Average: Pass"; }
+    }
+}

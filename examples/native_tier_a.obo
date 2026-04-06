@@ -1,0 +1,13 @@
+// Tier A parity: string compare, text + number
+function main()
+{
+    a = "hi";
+    b = "hi";
+    if (a == b)
+    {
+        show "eq_ok";
+    }
+    n = 42;
+    show "n is " + n;
+    show n + " end";
+}

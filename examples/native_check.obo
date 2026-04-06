@@ -1,0 +1,12 @@
+// Native: `check` with numeric comparison arms (no types / lists)
+function main()
+{
+    grade = 85;
+    check (grade)
+    {
+        is < 50  { show "Fail"; }
+        is < 70  { show "Okay"; }
+        is < 90  { show "Good"; }
+        is >= 90 { show "Excellent"; }
+    }
+}

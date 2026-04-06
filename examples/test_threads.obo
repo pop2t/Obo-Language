@@ -1,0 +1,19 @@
+function main() {
+    show "Starting tasks...";
+
+    run action() {
+        count (i = 0, 3) {
+            show "Task A: {i}";
+        }
+    };
+
+    run action() {
+        count (i = 0, 3) {
+            show "Task B: {i}";
+        }
+    };
+
+    show "Tasks spawned, waiting for all...";
+    wait for all;
+    show "All done!";
+}

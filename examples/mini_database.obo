@@ -1,0 +1,637 @@
+/// OBO Mini Database Engine — Benchmark & Stress Test
+/// Tests: actors, entities, maps, lists, closures, higher-order functions,
+///        string formatting, sorting algorithms, pattern matching,
+///        nested data structures, method chaining
+
+// ═══════════════════════════════════════════════════════════
+// Data Layer
+// ═══════════════════════════════════════════════════════════
+use Time;
+entity Row
+{
+   id;
+   data;
+}
+
+// ═══════════════════════════════════════════════════════════
+// Query Helpers
+// ═══════════════════════════════════════════════════════════
+
+/// Selection sort for Row lists — works with immutable lists
+function sort_rows(rows, column, ascending)
+{
+   result = [];
+   remaining = rows;
+   while (remaining.count > 0)
+   {
+       best = 0;
+       count (i = 1, remaining.count)
+       {
+           a = remaining[i].data[column];
+           b = remaining[best].data[column];
+           if (ascending and a < b) { best = i; }
+           if (not ascending and a > b) { best = i; }
+       }
+       result = result.add(remaining[best]);
+       remaining = remaining.removeAt(best);
+   }
+   out result;
+}
+
+/// Aggregate: sum of a numeric column
+function sum_of(rows, column)
+{
+   total = 0;
+   for (row in rows) { total = total + row.data[column]; }
+   out total;
+}
+
+/// Aggregate: average of a numeric column
+function avg_of(rows, column)
+{
+   if (rows.count == 0) { out 0; }
+   out sum_of(rows, column) / rows.count;
+}
+
+/// Aggregate: minimum value in a column
+function min_of(rows, column)
+{
+   if (rows.count == 0) { out null; }
+   best = rows[0].data[column];
+   for (row in rows)
+   {
+       v = row.data[column];
+       if (v < best) { best = v; }
+   }
+   out best;
+}
+
+/// Aggregate: maximum value in a column
+function max_of(rows, column)
+{
+   if (rows.count == 0) { out null; }
+   best = rows[0].data[column];
+   for (row in rows)
+   {
+       v = row.data[column];
+       if (v > best) { best = v; }
+   }
+   out best;
+}
+
+/// Group rows by a column — returns (groups_map, keys_list)
+function group_by(rows, column)
+{
+   groups = ["__init__": 0];
+   keys = [];
+   for (row in rows)
+   {
+       key = "" + row.data[column];
+       if (groups.has(key))
+       {
+           groups = groups.set(key, groups[key].add(row));
+       }
+       else
+       {
+           groups = groups.set(key, [row]);
+           keys = keys.add(key);
+       }
+   }
+   groups = groups.remove("__init__");
+   out groups, keys;
+}
+
+/// Inner join two tables on matching columns
+function inner_join(t1, t2, col1, col2)
+{
+   cols = [];
+   for (c in t1.columns) { cols = cols.add(t1.name + "." + c); }
+   for (c in t2.columns) { cols = cols.add(t2.name + "." + c); }
+
+   result_rows = [];
+   rid = 1;
+   for (r1 in t1.rows)
+   {
+       for (r2 in t2.rows)
+       {
+           if (r1.data[col1] == r2.data[col2])
+           {
+               merged = ["_": 0];
+               for (c in t1.columns) { merged[t1.name + "." + c] = r1.data[c]; }
+               for (c in t2.columns) { merged[t2.name + "." + c] = r2.data[c]; }
+               result_rows = result_rows.add(Row { id = rid; data = merged; });
+               rid = rid + 1;
+           }
+       }
+   }
+
+   joined = Table.create("join", cols);
+   joined.rows = result_rows;
+   out joined;
+}
+
+// ═══════════════════════════════════════════════════════════
+// Table Actor — the core query engine
+// ═══════════════════════════════════════════════════════════
+
+actor Table
+{
+   public name;
+   public columns;
+   public rows;
+   public next_id;
+
+   shared function create(tname, cols)
+   {
+       out Table { name = tname; columns = cols; rows = []; next_id = 1; };
+   }
+
+   /// Insert a record (map) and return its row ID
+   function insert(record)
+   {
+       r = Row { id = next_id; data = record; };
+       rows = rows.add(r);
+       next_id = next_id + 1;
+       out r.id;
+   }
+
+   /// Filter rows by a predicate closure -> new Table
+   function where(pred)
+   {
+       current = rows;
+       filtered = current.filter(pred);
+       t = Table.create(name, columns);
+       t.rows = filtered;
+       out t;
+   }
+
+   /// Sort by column -> new Table
+   function order_by(column, ascending)
+   {
+       sorted = sort_rows(rows, column, ascending);
+       t = Table.create(name, columns);
+       t.rows = sorted;
+       out t;
+   }
+
+   /// Update matching rows with an updater closure
+   function update_where(pred, updater)
+   {
+       current = rows;
+       new_rows = [];
+       changed = 0;
+       for (r in current)
+       {
+           if (pred(r))
+           {
+               new_data = updater(r.data);
+               new_rows = new_rows.add(Row { id = r.id; data = new_data; });
+               changed = changed + 1;
+           }
+           else
+           {
+               new_rows = new_rows.add(r);
+           }
+       }
+       rows = new_rows;
+       out changed;
+   }
+
+   /// Delete matching rows, return count removed
+   function delete_where(pred)
+   {
+       before = rows.count;
+       current = rows;
+       kept = [];
+       for (r in current)
+       {
+           match = pred(r);
+           if (not match)
+           {
+               kept = kept.add(r);
+           }
+       }
+       rows = kept;
+       out before - rows.count;
+   }
+
+   /// Find first row matching predicate, or null
+   function find_first(pred)
+   {
+       for (r in rows)
+       {
+           if (pred(r)) { out r; }
+       }
+       out null;
+   }
+
+   /// Pretty-print the table
+   function display()
+   {
+       show "";
+       show "--- " + name + " (" + rows.count + " rows) ---";
+       header = "  ";
+       for (c in columns)
+       {
+           header = header + c.padRight(16);
+       }
+       show header;
+       show "  " + "-".repeat(columns.count * 16);
+       for (r in rows)
+       {
+           line = "  ";
+           for (c in columns)
+           {
+               val = "" + r.data[c];
+               line = line + val.padRight(16);
+           }
+           show line;
+       }
+   }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Database Actor — manages multiple tables
+// ═══════════════════════════════════════════════════════════
+
+actor Database
+{
+   public name;
+   public tables;
+
+   shared function create(dbname)
+   {
+       out Database { name = dbname; tables = ["__init": 0]; };
+   }
+
+   function create_table(tname, cols)
+   {
+       t = Table.create(tname, cols);
+       tables[tname] = t;
+       show "[DB] Created table: " + tname + " (" + cols.join(", ") + ")";
+       out t;
+   }
+
+   function get_table(tname)
+   {
+       out tables[tname];
+   }
+
+   function update_table(tname, t)
+   {
+       tables[tname] = t;
+   }
+
+   function drop_table(tname)
+   {
+       tables = tables.remove(tname);
+       show "[DB] Dropped table: " + tname;
+   }
+
+   function info()
+   {
+       show "";
+       show "=== Database: " + name + " ===";
+       all_keys = tables.keys;
+       for (k in all_keys)
+       {
+           if (k != "__init")
+           {
+               t = tables[k];
+               show "  " + k + ": " + t.rows.count + " rows";
+           }
+       }
+   }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Main — SQL-like query demonstration
+// ═══════════════════════════════════════════════════════════
+
+function main()
+{
+   show "========================================";
+   show "  OBO Mini Database Engine — Benchmark  ";
+   show "========================================";
+
+   // ── Create database and tables ─────────────────
+   db = Database.create("CompanyDB");
+
+   employees = db.create_table("employees",
+       ["name", "department", "salary", "age", "level"]);
+
+   departments = db.create_table("departments",
+       ["dept_name", "budget", "head"]);
+
+   // ── Populate employees ─────────────────────────
+   show "";
+   show "== INSERT: Populating employees ==";
+
+   employees.insert(["name": "Alice",   "department": "Engineering", "salary": 95000,  "age": 32, "level": "Senior"]);
+   employees.insert(["name": "Bob",     "department": "Marketing",   "salary": 72000,  "age": 28, "level": "Mid"]);
+   employees.insert(["name": "Charlie", "department": "Engineering", "salary": 110000, "age": 35, "level": "Lead"]);
+   employees.insert(["name": "Diana",   "department": "HR",          "salary": 68000,  "age": 26, "level": "Junior"]);
+   employees.insert(["name": "Eve",     "department": "Engineering", "salary": 88000,  "age": 30, "level": "Mid"]);
+   employees.insert(["name": "Frank",   "department": "Marketing",   "salary": 85000,  "age": 34, "level": "Senior"]);
+   employees.insert(["name": "Grace",   "department": "HR",          "salary": 71000,  "age": 29, "level": "Mid"]);
+   employees.insert(["name": "Hank",    "department": "Engineering", "salary": 120000, "age": 40, "level": "Principal"]);
+   employees.insert(["name": "Ivy",     "department": "Marketing",   "salary": 62000,  "age": 24, "level": "Junior"]);
+   employees.insert(["name": "Jack",    "department": "Finance",     "salary": 92000,  "age": 33, "level": "Senior"]);
+   employees.insert(["name": "Karen",   "department": "Finance",     "salary": 78000,  "age": 27, "level": "Mid"]);
+   employees.insert(["name": "Leo",     "department": "Engineering", "salary": 98000,  "age": 31, "level": "Senior"]);
+
+   show "Inserted " + employees.rows.count + " employees";
+
+   // ── Populate departments ───────────────────────
+   departments.insert(["dept_name": "Engineering", "budget": 500000, "head": "Hank"]);
+   departments.insert(["dept_name": "Marketing",   "budget": 200000, "head": "Frank"]);
+   departments.insert(["dept_name": "HR",           "budget": 150000, "head": "Grace"]);
+   departments.insert(["dept_name": "Finance",      "budget": 300000, "head": "Jack"]);
+
+   show "Inserted " + departments.rows.count + " departments";
+
+   // ────────────────────────────────────────────────
+   // QUERY 1: SELECT * FROM employees
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 1: SELECT * FROM employees ==";
+   employees.display();
+
+   // ────────────────────────────────────────────────
+   // QUERY 2: SELECT * WHERE salary > 90000
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 2: SELECT * WHERE salary > 90000 ==";
+   high_earners = employees.where(action(r) { out r.data["salary"] > 90000; });
+   high_earners.display();
+
+   // ────────────────────────────────────────────────
+   // QUERY 3: SELECT * WHERE department = 'Engineering'
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 3: SELECT * WHERE department = 'Engineering' ==";
+   eng = employees.where(action(r) { out r.data["department"] == "Engineering"; });
+   eng.display();
+
+   // ────────────────────────────────────────────────
+   // QUERY 4: SELECT * ORDER BY salary DESC
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 4: SELECT * ORDER BY salary DESC ==";
+   by_salary = employees.order_by("salary", false);
+   by_salary.display();
+
+   // ────────────────────────────────────────────────
+   // QUERY 5: SELECT * ORDER BY age ASC
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 5: SELECT * ORDER BY age ASC ==";
+   by_age = employees.order_by("age", true);
+   by_age.display();
+
+   // ────────────────────────────────────────────────
+   // QUERY 6: WHERE + ORDER BY (chained)
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 6: Engineering employees ORDER BY salary DESC ==";
+   eng_sorted = employees
+       .where(action(r) { out r.data["department"] == "Engineering"; })
+       .order_by("salary", false);
+   eng_sorted.display();
+
+   // ────────────────────────────────────────────────
+   // QUERY 7: Aggregate functions
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 7: Aggregate functions on salary ==";
+   show "  COUNT:  " + employees.rows.count;
+   show "  SUM:    " + sum_of(employees.rows, "salary");
+   show "  AVG:    " + avg_of(employees.rows, "salary");
+   show "  MIN:    " + min_of(employees.rows, "salary");
+   show "  MAX:    " + max_of(employees.rows, "salary");
+
+   // ────────────────────────────────────────────────
+   // QUERY 8: GROUP BY department
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 8: GROUP BY department ==";
+   groups, keys = group_by(employees.rows, "department");
+   for (dept in keys)
+   {
+       dept_rows = groups[dept];
+       show "  " + dept.padRight(15)
+           + "count=" + ("" + dept_rows.count).padRight(4)
+           + "avg_salary=" + ("" + avg_of(dept_rows, "salary")).padRight(10)
+           + "min_age=" + ("" + min_of(dept_rows, "age")).padRight(5)
+           + "max_age=" + max_of(dept_rows, "age");
+   }
+
+   // ────────────────────────────────────────────────
+   // QUERY 9: Find first employee named 'Eve'
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 9: Find first employee named 'Eve' ==";
+   found = employees.find_first(action(r) { out r.data["name"] == "Eve"; });
+   if (found is not null)
+   {
+       show "  Found: " + found.data["name"]
+           + " | dept=" + found.data["department"]
+           + " | salary=$" + found.data["salary"];
+   }
+
+   // ────────────────────────────────────────────────
+   // QUERY 10: Employees earning above average
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 10: Employees earning above average ==";
+   average = avg_of(employees.rows, "salary");
+   show "  Average salary: " + average;
+   above_avg = employees.where(action(r) { out r.data["salary"] > average; });
+   above_avg.display();
+
+   // ────────────────────────────────────────────────
+   // QUERY 11: JOIN employees x departments
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 11: JOIN employees x departments ==";
+   joined = inner_join(employees, departments, "department", "dept_name");
+   show "  Joined " + joined.rows.count + " rows";
+   for (r in joined.rows)
+   {
+       show "  " + ("" + r.data["employees.name"]).padRight(10)
+           + "dept=" + ("" + r.data["employees.department"]).padRight(14)
+           + "salary=" + ("" + r.data["employees.salary"]).padRight(10)
+           + "budget=" + ("" + r.data["departments.budget"]).padRight(10)
+           + "head=" + r.data["departments.head"];
+   }
+
+   // ────────────────────────────────────────────────
+   // QUERY 12: UPDATE — 10% raise for Engineering
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 12: UPDATE — 10% raise for Engineering ==";
+   changed = employees.update_where(
+       action(r) { out r.data["department"] == "Engineering"; },
+       action(d)
+       {
+           d["salary"] = d["salary"] + d["salary"] / 10;
+           out d;
+       }
+   );
+   show "  Updated " + changed + " rows";
+   eng_after = employees.where(action(r) { out r.data["department"] == "Engineering"; });
+   eng_after.display();
+
+   // ────────────────────────────────────────────────
+   // QUERY 13: DELETE — Remove employees under age 25
+   // ────────────────────────────────────────────────
+   show "";
+   show "== QUERY 13: DELETE — Remove employees under age 25 ==";
+   removed = employees.delete_where(action(r) { out r.data["age"] < 25; });
+   show "  Removed " + removed + " rows";
+   employees.display();
+
+   // ── Final database info ────────────────────────
+   db.update_table("employees", employees);
+   db.update_table("departments", departments);
+   db.info();
+
+   show "";
+   show "All queries completed successfully!";
+}
+
+main();
+
+// ═══════════════════════════════════════════════════════════
+// Tests
+// ═══════════════════════════════════════════════════════════
+
+@test
+function test_insert_and_count()
+{
+   t = Table.create("test", ["a", "b"]);
+   t.insert(["a": 1, "b": 2]);
+   t.insert(["a": 3, "b": 4]);
+   assert(t.rows.count == 2);
+}
+
+@test
+function test_where_filter()
+{
+   t = Table.create("test", ["x"]);
+   t.insert(["x": 10]);
+   t.insert(["x": 20]);
+   t.insert(["x": 30]);
+   filtered = t.where(action(r) { out r.data["x"] > 15; });
+   assert(filtered.rows.count == 2);
+}
+
+@test
+function test_order_by_ascending()
+{
+   t = Table.create("test", ["v"]);
+   t.insert(["v": 30]);
+   t.insert(["v": 10]);
+   t.insert(["v": 20]);
+   sorted = t.order_by("v", true);
+   assert(sorted.rows[0].data["v"] == 10);
+   assert(sorted.rows[1].data["v"] == 20);
+   assert(sorted.rows[2].data["v"] == 30);
+}
+
+@test
+function test_order_by_descending()
+{
+   t = Table.create("test", ["v"]);
+   t.insert(["v": 10]);
+   t.insert(["v": 30]);
+   t.insert(["v": 20]);
+   sorted = t.order_by("v", false);
+   assert(sorted.rows[0].data["v"] == 30);
+   assert(sorted.rows[1].data["v"] == 20);
+   assert(sorted.rows[2].data["v"] == 10);
+}
+
+@test
+function test_update_where()
+{
+   t = Table.create("test", ["name", "score"]);
+   t.insert(["name": "a", "score": 50]);
+   t.insert(["name": "b", "score": 80]);
+   changed = t.update_where(
+       action(r) { out r.data["score"] < 60; },
+       action(d) { d["score"] = 100; out d; }
+   );
+   assert(changed == 1);
+   assert(t.rows[0].data["score"] == 100);
+   assert(t.rows[1].data["score"] == 80);
+}
+
+@test
+function test_delete_where()
+{
+   t = Table.create("test", ["val"]);
+   t.insert(["val": 1]);
+   t.insert(["val": 2]);
+   t.insert(["val": 3]);
+   removed = t.delete_where(action(r) { out r.data["val"] == 2; });
+   assert(removed == 1);
+   assert(t.rows.count == 2);
+}
+
+@test
+function test_aggregates()
+{
+   t = Table.create("test", ["n"]);
+   t.insert(["n": 10]);
+   t.insert(["n": 20]);
+   t.insert(["n": 30]);
+   assert(sum_of(t.rows, "n") == 60);
+   assert(avg_of(t.rows, "n") == 20);
+   assert(min_of(t.rows, "n") == 10);
+   assert(max_of(t.rows, "n") == 30);
+}
+
+@test
+function test_find_first()
+{
+   t = Table.create("test", ["name"]);
+   t.insert(["name": "x"]);
+   t.insert(["name": "y"]);
+   t.insert(["name": "z"]);
+   found = t.find_first(action(r) { out r.data["name"] == "y"; });
+   assert(found is not null);
+   assert(found.data["name"] == "y");
+
+   missing = t.find_first(action(r) { out r.data["name"] == "w"; });
+   assert(missing is null);
+}
+
+@test
+function test_chained_query()
+{
+   t = Table.create("test", ["cat", "val"]);
+   t.insert(["cat": "a", "val": 3]);
+   t.insert(["cat": "b", "val": 1]);
+   t.insert(["cat": "a", "val": 2]);
+   t.insert(["cat": "b", "val": 4]);
+   result = t.where(action(r) { out r.data["cat"] == "a"; })
+             .order_by("val", true);
+   assert(result.rows.count == 2);
+   assert(result.rows[0].data["val"] == 2);
+   assert(result.rows[1].data["val"] == 3);
+}
+
+@test
+function test_group_by()
+{
+   t = Table.create("test", ["dept", "sal"]);
+   t.insert(["dept": "A", "sal": 100]);
+   t.insert(["dept": "B", "sal": 200]);
+   t.insert(["dept": "A", "sal": 300]);
+   groups, keys = group_by(t.rows, "dept");
+   assert(keys.count == 2);
+   assert(groups["A"].count == 2);
+   assert(groups["B"].count == 1);
+}
+

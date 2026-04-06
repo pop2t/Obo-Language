@@ -1,0 +1,8 @@
+// Native Tier C: list literals, count, indexing, show (numbers only).
+function main()
+{
+    xs = [10, 20, 30];
+    show xs;
+    show xs.count;
+    show xs[1];
+}

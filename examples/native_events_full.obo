@@ -1,0 +1,34 @@
+actor Counter
+{
+    public event onIncrement;
+    public event onReset;
+
+    function increment(amount)
+    {
+        emit onIncrement(amount);
+    }
+
+    function reset()
+    {
+        emit onReset();
+    }
+}
+
+function main()
+{
+    c = Counter {};
+
+    c.onIncrement.listen(action(amount)
+    {
+        show "incremented by " + amount;
+    });
+
+    c.onReset.listen(action()
+    {
+        show "reset!";
+    });
+
+    c.increment(5);
+    c.increment(10);
+    c.reset();
+}

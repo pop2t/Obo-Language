@@ -1,0 +1,14 @@
+function main() {
+    first = run action() {
+        show "first task";
+    };
+    wait for first;
+
+    show "between";
+
+    second = run action() {
+        show "second task";
+    };
+    wait for second;
+    show "done";
+}

@@ -1,0 +1,73 @@
+choice Tool
+{
+    Hammer,
+    Wrench,
+    Screwdriver
+}
+
+entity Stats
+{
+    health;
+    speed;
+}
+
+actor Character
+{
+    public name;
+    public health = 100;
+
+    function greet()
+    {
+        show "I'm " + name + " with " + health + " HP";
+    }
+
+    function takeDamage(amount)
+    {
+        health = health - amount;
+        if (health < 0) { health = 0; }
+        show name + " took " + amount + " damage! HP: " + health;
+    }
+}
+
+actor Farmer is Character
+{
+    public tool;
+
+    shared function create(farmerName)
+    {
+        out Farmer
+        {
+            name = farmerName;
+            health = 100;
+            tool = Tool.Hammer;
+        };
+    }
+
+    function work()
+    {
+        check (tool)
+        {
+            is Tool.Hammer  { show name + " hammers away!"; }
+            is Tool.Wrench  { show name + " tightens bolts!"; }
+        }
+    }
+}
+
+function main()
+{
+    farmer = Farmer.create("Obo");
+    farmer.greet();
+    farmer.work();
+    farmer.takeDamage(30);
+    farmer.greet();
+
+    show "";
+    show "=== Entity Test ===";
+    stats = Stats { health = 100; speed = 5; };
+    show stats;
+
+    show "";
+    show "=== Choice Test ===";
+    myTool = Tool.Wrench;
+    show myTool;
+}

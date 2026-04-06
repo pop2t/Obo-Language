@@ -1,0 +1,16 @@
+   1:1   KwFunction           "function"
+   1:10  Identifier           "greet"
+   1:15  LeftParen            "("
+   1:16  Identifier           "name"
+   1:21  KwText               "text"
+   1:25  RightParen           ")"
+   2:1   LeftBrace            "{"
+   3:5   KwShow               "show"
+   3:10  StringLiteral        "Hello, "
+   3:20  Plus                 "+"
+   3:22  Identifier           "name"
+   3:26  Semicolon            ";"
+   4:1   RightBrace           "}"
+   4:2   Eof                  ""
+
+--- 14 tokens ---

@@ -1,0 +1,16 @@
+6
+3.0
+payload ready
+payload message=hello
+payload child=Payload { score = 1; ratio = 0.5; ready = false; message = kid; child = null; items = [1]; meta = [seen: true]; nothing = null }
+payload meta=[count: 2, ready: true]
+payload nothing=null
+10
+2.0
+stash ready
+stash message=bag
+stash info=[count: 2, ready: true]
+stash child=Payload { score = 1; ratio = 0.5; ready = false; message = kid; child = null; items = [1]; meta = [seen: true]; nothing = null }
+stash items=[8, 9]
+stash nothing=null
+10

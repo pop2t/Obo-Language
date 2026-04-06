@@ -1,0 +1,34 @@
+// Test byte, bits, and pointer types
+
+function main() {
+    // Byte type — 8-bit unsigned (0-255)
+    byte health = 200;
+    show health;
+
+    byte damage = 50;
+    show damage;
+
+    // Byte arithmetic
+    byte remaining = health - damage;
+    show remaining;
+
+    // Binary literals
+    bits mask = 0b11001100;
+    show mask;
+
+    bits opcode = 0b1010011;
+    show opcode;
+
+    // Hex literals
+    number hex_val = 0xFF;
+    show hex_val;
+
+    number hex_addr = 0xDEAD;
+    show hex_addr;
+
+    // Pointer alloc/free (native only)
+    // ptr = pointer.alloc(1024);
+    // ptr.free();
+
+    show "done";
+}

@@ -1,0 +1,411 @@
+// =============================================
+// OBO Comprehensive Feature Test
+// =============================================
+
+const MAX = 100;
+
+choice Color
+{
+    Red,
+    Green,
+    Blue
+}
+
+choice Shape
+{
+    Circle(radius),
+    Rectangle(width, height),
+    Point
+}
+
+entity Vec2
+{
+    x;
+    y;
+}
+
+entity Stats
+{
+    health;
+    armor;
+}
+
+actor Animal
+{
+    public name;
+    public sound;
+
+    function speak()
+    {
+        show name + " says " + sound;
+    }
+}
+
+actor Dog is Animal
+{
+    public tricks = 0;
+
+    shared function create(dogName)
+    {
+        out Dog
+        {
+            name = dogName;
+            sound = "Woof";
+            tricks = 0;
+        };
+    }
+
+    function learnTrick()
+    {
+        tricks = tricks + 1;
+        show name + " learned a trick! Total: " + tricks;
+    }
+}
+
+function add(a, b)
+{
+    out a + b;
+}
+
+function greet(name, greeting = "Hello")
+{
+    out greeting + ", " + name + "!";
+}
+
+function divide(a, b)
+{
+    if (b is 0)
+    {
+        out null, "Division by zero";
+    }
+    out a / b, null;
+}
+
+function sumList(items)
+{
+    total = 0;
+    for (item in items)
+    {
+        total = total + item;
+    }
+    out total;
+}
+
+function factorial(n)
+{
+    if (n <= 1) { out 1; }
+    out n * factorial(n - 1);
+}
+
+function main()
+{
+    show "=== 1. Variables & Constants ===";
+    x = 42;
+    name = "Obo";
+    pi = 3.14;
+    alive = true;
+    nothing = null;
+    show x;
+    show name;
+    show pi;
+    show alive;
+    show nothing;
+    show MAX;
+
+    show "";
+    show "=== 2. Arithmetic ===";
+    show 10 + 3;
+    show 10 - 3;
+    show 10 * 3;
+    show 10 / 3;
+    show 10 % 3;
+    show -5;
+    show 2 + 3 * 4;
+    show (2 + 3) * 4;
+
+    show "";
+    show "=== 3. Strings ===";
+    first = "Hello";
+    last = "World";
+    show first + " " + last;
+    show "Count: " + 42;
+    msg = "upper test";
+    show msg.upper;
+    show msg.lower;
+    show msg.length;
+    show "  trimmed  ".trim;
+
+    show "";
+    show "=== 4. String Interpolation ===";
+    age = 25;
+    show "Name: {name}, Age: {age}";
+    show "Math: {2 + 3}";
+
+    show "";
+    show "=== 5. Logic & Comparisons ===";
+    show true and true;
+    show true and false;
+    show true or false;
+    show false or false;
+    show not true;
+    show not false;
+    show 5 > 3;
+    show 5 < 3;
+    show 5 >= 5;
+    show 5 <= 4;
+    show 5 == 5;
+    show 5 != 3;
+
+    show "";
+    show "=== 6. Is / Is Not ===";
+    val = null;
+    show val is null;
+    show val is not null;
+    val = 42;
+    show val is 42;
+    show val is not 42;
+
+    show "";
+    show "=== 7. If/Else ===";
+    score = 85;
+    if (score >= 90)
+    {
+        show "A";
+    }
+    else if (score >= 80)
+    {
+        show "B";
+    }
+    else if (score >= 70)
+    {
+        show "C";
+    }
+    else
+    {
+        show "F";
+    }
+
+    show "";
+    show "=== 8. While Loop ===";
+    i = 0;
+    while (i < 3)
+    {
+        show "while: " + i;
+        i = i + 1;
+    }
+
+    show "";
+    show "=== 9. Forever + Stop ===";
+    counter = 0;
+    forever
+    {
+        if (counter >= 3) { stop; }
+        show "forever: " + counter;
+        counter = counter + 1;
+    }
+
+    show "";
+    show "=== 10. Count Loop ===";
+    count (i = 0, 4)
+    {
+        show "count: " + i;
+    }
+
+    show "";
+    show "=== 11. Count with Step ===";
+    count (i = 0, 10, step = 3)
+    {
+        show "step: " + i;
+    }
+
+    show "";
+    show "=== 12. For-In Loop ===";
+    fruits = ["apple", "banana", "cherry"];
+    for (f in fruits)
+    {
+        show "fruit: " + f;
+    }
+
+    show "";
+    show "=== 13. Restart (Continue) ===";
+    count (i = 0, 5)
+    {
+        if (i == 2 or i == 4) { restart; }
+        show "skip 2,4: " + i;
+    }
+
+    show "";
+    show "=== 14. Check (Switch) ===";
+    grade = 75;
+    check (grade)
+    {
+        is < 50  { show "Fail"; }
+        is < 70  { show "Okay"; }
+        is < 90  { show "Good"; }
+        is >= 90 { show "Excellent"; }
+    }
+
+    show "";
+    show "=== 15. Check with Values ===";
+    color = "red";
+    check (color)
+    {
+        is "red"   { show "Stop!"; }
+        is "green" { show "Go!"; }
+        is "blue"  { show "Sky!"; }
+    }
+
+    show "";
+    show "=== 16. Check Null ===";
+    maybe = null;
+    check (maybe)
+    {
+        is null { show "It's null"; }
+    }
+
+    show "";
+    show "=== 17. Functions ===";
+    result = add(10, 20);
+    show "add: " + result;
+
+    show "";
+    show "=== 18. Default Parameters ===";
+    show greet("Obo");
+    show greet("Obo", "Hey");
+
+    show "";
+    show "=== 19. Multi-Return ===";
+    val1, err1 = divide(10, 3);
+    show "10/3 = " + val1;
+    show "error: " + err1;
+    val2, err2 = divide(10, 0);
+    show "10/0 = " + val2;
+    show "error: " + err2;
+
+    show "";
+    show "=== 20. Recursion ===";
+    show "5! = " + factorial(5);
+
+    show "";
+    show "=== 21. Lists ===";
+    nums = [10, 20, 30, 40, 50];
+    show nums;
+    show "count: " + nums.count;
+    show "first: " + nums.first;
+    show "last: " + nums.last;
+    show "index 2: " + nums[2];
+
+    show "";
+    show "=== 22. List Filter ===";
+    big = nums.filter(n => n > 25);
+    show "big: " + big;
+
+    show "";
+    show "=== 23. List Map ===";
+    doubled = nums.map(n => n * 2);
+    show "doubled: " + doubled;
+
+    show "";
+    show "=== 24. List Reduce ===";
+    total = nums.reduce(0, (acc, n) => acc + n);
+    show "sum: " + total;
+
+    show "";
+    show "=== 25. Inline If ===";
+    x = 10;
+    label = "big" if x > 5 else "small";
+    show label;
+    label2 = "zero" if x == 0 else "nonzero";
+    show label2;
+
+    show "";
+    show "=== 26. If Possible Else ===";
+    safeVal = 42 if possible else 0;
+    show "safe: " + safeVal;
+
+    show "";
+    show "=== 27. Entity ===";
+    pos = Vec2 { x = 10; y = 20; };
+    show pos;
+    show "x=" + pos.x + " y=" + pos.y;
+
+    show "";
+    show "=== 28. Choice (Simple) ===";
+    c = Color.Red;
+    show c;
+    c2 = Color.Blue;
+    show c2;
+
+    show "";
+    show "=== 29. Choice with Data ===";
+    s1 = Shape.Circle(5);
+    show s1;
+    s2 = Shape.Rectangle(10, 20);
+    show s2;
+    s3 = Shape.Point;
+    show s3;
+
+    show "";
+    show "=== 30. Actor + Static ===";
+    dog = Dog.create("Rex");
+    dog.speak();
+    dog.learnTrick();
+    dog.learnTrick();
+
+    show "";
+    show "=== 31. Inheritance ===";
+    dog.speak();
+
+    show "";
+    show "=== 32. Arrow Actions ===";
+    transform = action(x) { out x * 10; };
+    show transform(5);
+
+    show "";
+    show "=== 33. Nested Calls ===";
+    show add(add(1, 2), add(3, 4));
+
+    show "";
+    show "=== 34. String Contains ===";
+    sentence = "hello world";
+    show sentence.contains("world");
+    show sentence.contains("xyz");
+
+    show "";
+    show "=== 35. String Split ===";
+    csv = "a,b,c,d";
+    parts = csv.split(",");
+    show parts;
+
+    show "";
+    show "=== 36. List Contains ===";
+    colors = ["red", "green", "blue"];
+    show colors.contains("green");
+    show colors.contains("yellow");
+
+    show "";
+    show "=== 37. Possible Block ===";
+    possible
+    {
+        show "This should work fine";
+    }
+    else (error)
+    {
+        show "Error: " + error;
+    }
+
+    show "";
+    show "=== 38. Chained Methods ===";
+    nums2 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    evens = nums2.filter(n => n % 2 == 0);
+    show "evens: " + evens;
+    evenDoubled = evens.map(n => n * 2);
+    show "even*2: " + evenDoubled;
+
+    show "";
+    show "=== 39. Helper Function Call ===";
+    show "sumList: " + sumList(nums);
+
+    show "";
+    show "=== ALL TESTS PASSED ===";
+}

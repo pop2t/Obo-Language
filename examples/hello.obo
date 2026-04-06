@@ -1,0 +1,64 @@
+function main()
+{
+    show "Hello from OBO!";
+    show "The language that's a little bit alive.";
+
+    name = "Obo";
+    age = 1;
+    show "My name is " + name + " and I'm " + age + " day old.";
+
+    // Math
+    x = 10;
+    y = 3;
+    show x + y;
+    show x * y;
+    show x / y;
+
+    // Logic
+    if (x > y and not false)
+    {
+        show "Logic works!";
+    }
+
+    // Lists
+    scores = [85, 42, 91, 37, 68];
+    show scores;
+    show "Count: " + scores.count;
+
+    // Filter with arrow action
+    passing = scores.filter(s => s >= 50);
+    show "Passing: " + passing;
+
+    // Map
+    doubled = scores.map(s => s * 2);
+    show "Doubled: " + doubled;
+
+    // Count loop
+    count (i = 0, 5)
+    {
+        show "tick " + i;
+    }
+
+    // For-in loop
+    fruits = ["apple", "banana", "cherry"];
+    for (fruit in fruits)
+    {
+        show "I like " + fruit;
+    }
+
+    // Check (switch)
+    grade = 85;
+    check (grade)
+    {
+        is < 50  { show "Fail"; }
+        is < 70  { show "Okay"; }
+        is < 90  { show "Good"; }
+        is >= 90 { show "Excellent"; }
+    }
+
+    // Inline if
+    status = "pass" if grade >= 50 else "fail";
+    show "Status: " + status;
+
+    show "Done!";
+}

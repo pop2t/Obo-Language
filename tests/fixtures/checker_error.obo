@@ -1,0 +1,6 @@
+function main()
+{
+    name = 42;
+    name = true;
+    show missingValue;
+}

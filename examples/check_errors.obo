@@ -1,0 +1,115 @@
+// =============================================
+// OBO Type Checker Error Showcase
+// This file has INTENTIONAL errors to test
+// the semantic analyzer's error detection
+// =============================================
+
+const MAX_HEALTH = 100;
+
+trait Drawable
+{
+    function draw();
+    function resize(factor);
+}
+
+entity Position
+{
+    x;
+    y;
+}
+
+final actor Wall
+{
+    public width;
+    public height;
+}
+
+template actor Enemy
+{
+    public health;
+
+    template function attack();
+
+    function takeDamage(amount)
+    {
+        health = health - amount;
+    }
+}
+
+// Error: Goblin inherits from template Enemy but doesn't implement attack()
+actor Goblin is Enemy
+{
+    public name;
+}
+
+// Error: Brick inherits from final Wall
+actor Brick is Wall
+{
+    public color;
+}
+
+// Error: says 'has' a trait that doesn't exist
+actor Ghost has Flyable
+{
+    public altitude;
+}
+
+// Error: says 'has Drawable' but doesn't implement draw() or resize()
+actor Square has Drawable
+{
+    public size;
+
+    function area()
+    {
+        out size * size;
+    }
+}
+
+function add(a, b)
+{
+    out a + b;
+}
+
+// Error: duplicate function name
+function add(x, y, z)
+{
+    out x + y + z;
+}
+
+function main()
+{
+    // Error: undeclared variable (with "Did you mean" suggestion)
+    show scroe;
+
+    // Error: const reassignment
+    MAX_HEALTH = 200;
+
+    // Error: wrong number of arguments
+    result = add(1, 2, 3, 4, 5);
+
+    // Error: math on incompatible types
+    x = "hello" * 3;
+
+    // Error: negate a string
+    y = -"text";
+
+    // Error: 'not' on a number
+    z = not 42;
+
+    // Error: stop outside a loop
+    stop;
+
+    // Error: restart outside a loop
+    restart;
+
+    // Error: unknown type in entity init
+    p = Unicorn { magic = true; };
+
+    // Error: wrong field name on entity
+    pos = Position { x = 10; z = 30; };
+
+    // Warning: unused variable
+    unused_thing = 42;
+
+    show "done";
+}

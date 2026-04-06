@@ -1,0 +1,7 @@
+Program
+  ├── Entity { User }
+    ├── Field { name }
+    ├── Field { age }
+  ├── Function { greet(name) }
+    ├── Show { ("Hello, " + name) }
+--- 2 top-level declarations ---

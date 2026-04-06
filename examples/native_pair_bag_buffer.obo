@@ -1,0 +1,40 @@
+// Native test for pair, bag, buffer, slice
+
+function main() {
+    // Pair
+    p = pair(10, 20);
+    show p.first;
+    show p.second;
+
+    // Bag
+    b = bag(1, 2, 3);
+    show b.count;
+    b2 = b.add(42);
+    show b2.count;
+    show b2.has(2);
+    b3 = b2.remove(2);
+    show b3.count;
+    show b3.has(2);
+
+    // Buffer
+    buf = buffer(4);
+    show buf.length;
+    buf2 = buf.set(0, 65);
+    buf3 = buf2.set(1, 66);
+    show buf3.get(0);
+    show buf3.get(1);
+
+    // Slice
+    nums = [1, 2, 3, 4, 5];
+    s = slice(nums, 1, 4);
+    show s.count;
+
+    // Empty bag
+    empty = bag();
+    show empty.count;
+    show empty.empty;
+
+    show "done";
+}
+
+main();

@@ -1,0 +1,71 @@
+entity Payload {
+    score;
+    ratio;
+    ready;
+    message;
+    child;
+    items;
+    meta;
+    nothing;
+}
+
+function main() {
+    child = Payload {
+        score = 1;
+        ratio = 0.5;
+        ready = false;
+        message = "kid";
+        child = null;
+        items = [1];
+        meta = ["seen": true];
+        nothing = null;
+    };
+
+    payload = Payload {
+        score = 4;
+        ratio = 2.5;
+        ready = true;
+        message = "hello";
+        child = child;
+        items = [1, 2, 3];
+        meta = ["count": 2, "ready": true];
+        nothing = null;
+    };
+
+    stash = [
+        "score": 7,
+        "ratio": 1.25,
+        "ready": false,
+        "message": "bag",
+        "meta": ["items": 3],
+        "child": child,
+        "items": [8, 9],
+        "nothing": null
+    ];
+
+    stash.set("bonus", payload.score);
+    stash.set("ready", payload.ready);
+    stash.set("info", payload.meta);
+
+    show payload.score + 2;
+    show payload.ratio + 0.5;
+    if (payload.ready) {
+        show "payload ready";
+    }
+    show "payload message=" + payload.message;
+    show "payload child=" + payload.child;
+    show "payload meta=" + payload.meta;
+    show "payload nothing=" + payload.nothing;
+
+    show stash.get("score") + 3;
+    show stash.get("ratio") + 0.75;
+    if (stash.get("ready")) {
+        show "stash ready";
+    }
+    show "stash message=" + stash.get("message");
+    show "stash info=" + stash.get("info");
+    show "stash child=" + stash.get("child");
+    show "stash items=" + stash.get("items");
+    show "stash nothing=" + stash.get("nothing");
+    show stash.count;
+}

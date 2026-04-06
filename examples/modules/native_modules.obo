@@ -1,0 +1,6 @@
+use helpers;
+
+function main() {
+    show double(21);
+    show greet("Obo");
+}

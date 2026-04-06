@@ -1,0 +1,24 @@
+// Native parity: shared factory + instance method (direct `Call` + runtime dispatch).
+actor Pinger
+{
+    public dummy;
+
+    shared function make()
+    {
+        out Pinger
+        {
+            dummy = 0;
+        };
+    }
+
+    function n()
+    {
+        out 42;
+    }
+}
+
+function main()
+{
+    p = Pinger.make();
+    show p.n();
+}

@@ -1,0 +1,14 @@
+function loud(label as text, value as number) {
+    show label;
+    out value;
+}
+
+function main() {
+    result = loud("then", 1) if false else loud("else", 2);
+    label = "pass" if result > 1 else "fail";
+    side = "left" if false else "right";
+
+    show result;
+    show label;
+    show side;
+}

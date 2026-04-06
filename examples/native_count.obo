@@ -1,0 +1,8 @@
+// Native: count loop (integer range)
+function main()
+{
+    count (i = 0, 3)
+    {
+        show "tick " + i;
+    }
+}

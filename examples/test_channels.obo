@@ -1,0 +1,17 @@
+function main() {
+    ch = channel of number;
+
+    run action() {
+        ch.send(10);
+        ch.send(20);
+        ch.send(30);
+    };
+
+    a = ch.receive();
+    b = ch.receive();
+    c = ch.receive();
+    show "received: {a}, {b}, {c}";
+
+    wait for all;
+    show "channel done";
+}

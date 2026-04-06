@@ -1,0 +1,20 @@
+function main()
+{
+    s = "Hello, World!";
+    show s.length;
+    show s.upper;
+    show s.lower;
+    show s.contains("World");
+    show s.startsWith("Hello");
+    show s.endsWith("!");
+    show s.indexOf("World");
+    show s.replace("World", "OBO");
+    show s.substring(0, 5);
+    show s.repeat(2);
+
+    t = "  spaces  ";
+    show t.trim;
+    show t.empty;
+    show "".empty;
+    show s.reversed;
+}

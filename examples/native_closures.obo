@@ -1,0 +1,45 @@
+// Test closures and callback list methods
+function main() {
+    // Basic closure with capture
+    multiplier = 3;
+    triple = action(x) { out x * multiplier; };
+    show triple(5);
+    show triple(10);
+
+    // Arrow action (standalone)
+    double = x => x * 2;
+    show double(7);
+
+    // Callback list methods
+    nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+    // filter: keep evens
+    is_even = action(n) { out n % 2 == 0; };
+    evens = nums.filter(is_even);
+    show evens.join(", ");
+
+    // map: double each
+    doubler = action(n) { out n * 2; };
+    doubled = nums.map(doubler);
+    show doubled.join(", ");
+
+    // reduce: sum
+    adder = action(acc, n) { out acc + n; };
+    total = nums.reduce(0, adder);
+    show total;
+
+    // any / all
+    big_check = action(n) { out n > 5; };
+    has_big = nums.any(big_check);
+    show has_big;
+
+    pos_check = action(n) { out n > 0; };
+    all_positive = nums.all(pos_check);
+    show all_positive;
+
+    // Closure capturing outer variable
+    threshold = 7;
+    above = action(n) { out n > threshold; };
+    big_nums = nums.filter(above);
+    show big_nums.join(", ");
+}

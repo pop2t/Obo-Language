@@ -1,0 +1,78 @@
+// P5 Meta & Reflection test
+
+// === #32: @test attribute + assert ===
+
+@test
+function test_basic_math()
+{
+    assert(1 + 1 == 2);
+    assert(10 - 3 == 7, "subtraction should work");
+    show "✅ test_basic_math passed";
+}
+
+@test
+function test_strings()
+{
+    greeting = "hello";
+    assert(greeting == "hello", "string assignment");
+    show "✅ test_strings passed";
+}
+
+function helper()
+{
+    out 42;
+}
+
+@test
+function test_helper()
+{
+    assert(helper() == 42, "helper should return 42");
+    show "✅ test_helper passed";
+}
+
+// === #34: @serializable / @reflectable ===
+
+@reflectable
+entity Point
+{
+    x;
+    y;
+}
+
+@serializable
+entity Config
+{
+    name;
+    value;
+    active;
+}
+
+@reflectable
+@serializable
+entity Player
+{
+    name;
+    score;
+}
+
+// === #35: inspect(obj) ===
+
+function test_reflect()
+{
+    p = Point { x = 10; y = 20; };
+    info = inspect(p);
+    show "Reflection of Point:";
+    show info;
+    show "✅ inspect tests passed";
+}
+
+// === Run all ===
+
+function main()
+{
+    test_basic_math();
+    test_strings();
+    test_helper();
+    test_reflect();
+    show "🎉 All P5 meta tests passed!";
+}

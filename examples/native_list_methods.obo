@@ -1,0 +1,27 @@
+function main()
+{
+    nums = [3, 1, 4, 1, 5, 9];
+    show nums.count;
+    show nums.first;
+    show nums.last;
+    show nums.empty;
+    show nums.contains(4);
+    show nums.indexOf(5);
+
+    sorted = nums.sort();
+    show sorted;
+
+    rev = nums.reverse();
+    show rev;
+
+    top3 = nums.take(3);
+    show top3;
+
+    rest = nums.skip(3);
+    show rest;
+
+    unique = nums.distinct();
+    show unique;
+
+    show nums.join(", ");
+}

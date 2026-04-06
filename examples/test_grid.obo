@@ -1,0 +1,44 @@
+function main() {
+    // Grid2D
+    g = grid2d(3, 4);
+    show g.rows;
+    show g.cols;
+    show g.count;
+    show g.get(0, 0);
+
+    g2 = g.set(1, 2, 99);
+    show g2.get(1, 2);
+
+    g3 = g2.fill(5);
+    show g3.get(0, 0);
+    show g3.get(2, 3);
+
+    // Row/col extraction
+    g4 = grid2d(2, 3);
+    g4 = g4.set(0, 0, 1);
+    g4 = g4.set(0, 1, 2);
+    g4 = g4.set(0, 2, 3);
+    g4 = g4.set(1, 0, 4);
+    g4 = g4.set(1, 1, 5);
+    g4 = g4.set(1, 2, 6);
+    show g4.row(0);
+    show g4.col(1);
+
+    // Grid3D
+    g5 = grid3d(2, 3, 4);
+    show g5.x;
+    show g5.y;
+    show g5.z;
+    show g5.count;
+
+    g6 = g5.set(1, 2, 3, 42);
+    show g6.get(1, 2, 3);
+    show g6.get(0, 0, 0);
+
+    g7 = g6.fill(7);
+    show g7.get(0, 0, 0);
+
+    show "done";
+}
+
+main();

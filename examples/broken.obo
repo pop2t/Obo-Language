@@ -1,0 +1,5 @@
+function main()
+{
+    name = "hello world;
+    x = 5 | 3;
+}

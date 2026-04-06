@@ -1,0 +1,39 @@
+// Test set, queue, stack in native
+
+function main() {
+    // Set
+    s = set(1, 2, 3, 2, 1);
+    show s.count;
+    s = s.add(4);
+    show s.count;
+    show s.has(3);
+    show s.has(99);
+
+    // Queue (FIFO)
+    q = queue(10, 20, 30);
+    show q.count;
+    show q.peek;
+    q = q.push(40);
+    show q.count;
+    q = q.pop();
+    show q.count;
+
+    // Stack (LIFO)
+    st = stack(100, 200, 300);
+    show st.count;
+    show st.peek;
+    st = st.push(400);
+    show st.count;
+    st = st.pop();
+    show st.count;
+
+    // Iterate over set
+    items = set(5, 10, 15);
+    total = 0;
+    for (x in items) {
+        total = total + x;
+    }
+    show total;
+
+    show "done";
+}

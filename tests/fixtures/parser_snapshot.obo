@@ -1,0 +1,10 @@
+entity User
+{
+    name;
+    age;
+}
+
+function greet(name)
+{
+    show "Hello, " + name;
+}

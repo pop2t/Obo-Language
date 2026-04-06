@@ -1,0 +1,28 @@
+
+Obo: 'name' shadows a variable from an outer scope 👤
+  warning[shadowed variable]
+  --> tests/fixtures/checker_error.obo:4:5
+       │ 
+     4 │     name = true;
+       │     ^~~~
+     3 │     name = 42;
+       │     ~~~~ originally defined here
+    hint: Consider using a different name to avoid confusion
+
+Obo: I can't find 'missingValue' — is it defined? 👻
+  error[undeclared variable]
+  --> tests/fixtures/checker_error.obo:5:10
+       │ 
+     5 │     show missingValue;
+       │          ^~~~~~~~~~~~
+    hint: Check the spelling or make sure it's defined above this line
+
+Obo: 'name' is defined but never used — that's a waste! 🧹
+  warning[unused variable]
+  --> tests/fixtures/checker_error.obo:4:5
+       │ 
+     4 │     name = true;
+       │     ^~~~
+    hint: Remove it or prefix with _ to silence this: _name
+
+Obo: Found 1 error and 2 warnings 😤

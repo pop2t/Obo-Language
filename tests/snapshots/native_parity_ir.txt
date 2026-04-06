@@ -1,0 +1,7 @@
+define i32 @main() {
+  %t0 = sitofp i64 2 to double
+  %t1 = fadd double 0x3FF8000000000000, %t0
+  %t5 = call i8* @obo_f64_to_str(double %t4)
+  %t6 = call i8* @obo_str_concat(i8* getelementptr inbounds ([5 x i8], [5 x i8]* @obo.str.0, i64 0, i64 0), i8* %t5)
+  call void @obo_print_double(double %t11)
+  ret i32 %t12

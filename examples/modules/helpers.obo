@@ -1,0 +1,7 @@
+function double(n as number) {
+    out n * 2;
+}
+
+function greet(name as text) {
+    out "Hello, " + name + "!";
+}

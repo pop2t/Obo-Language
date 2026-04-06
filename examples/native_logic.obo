@@ -1,0 +1,8 @@
+// Native: logical and/or (truthiness) + show flag as true/false — see OBO_NATIVE_PARITY.md
+function main()
+{
+    show true and false;
+    show true or false;
+    show true and true;
+    show false or false;
+}

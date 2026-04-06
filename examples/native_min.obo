@@ -1,0 +1,7 @@
+// Minimal program for native (LLVM IR) codegen — no lists, strings concat, or calls.
+function main()
+{
+    show "Hello from native OBO!";
+    x = 40 + 2;
+    show x;
+}
