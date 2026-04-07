@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::parser::ast::*;
 use crate::stdlib;
 
-use super::super::value::{ActionBody, OboAction, OboFunction, Value};
+use super::super::value::{ActionBody, OboAction, OboFunction, OboMap, Value};
 use super::{Interpreter, Signal, TypeDef};
 
 impl Interpreter {
@@ -359,8 +359,8 @@ impl Interpreter {
             }
         }
 
-        if let Value::Map(ref pairs) = object {
-            if let Some(result) = stdlib::collections::map_method(pairs, method, &arg_vals) {
+        if let Value::Map(ref map) = object {
+            if let Some(result) = stdlib::collections::map_method(map, method, &arg_vals) {
                 return result;
             }
         }
@@ -496,8 +496,9 @@ impl Interpreter {
                     body: method_decl.body.clone(),
                     closure_env: None,
                 };
+                let fields = inst.snapshot_fields();
                 self.env.push_scope();
-                for (key, value) in &inst.fields {
+                for (key, value) in &fields {
                     self.env.define(key, value.clone());
                 }
                 if let Some(TypeDef::Actor(actor)) = self.type_registry.get(&inst.type_name).cloned()
@@ -517,18 +518,12 @@ impl Interpreter {
                 }
                 let result = self.call_function(&func, &arg_vals)?;
 
-                if let Expr::Identifier(var_name, _) = obj_expr {
-                    let mut updated = inst.clone();
-                    for (key, _) in &inst.fields {
-                        if let Some(new_val) = self.env.get(key) {
-                            updated.fields.insert(key.clone(), new_val.clone());
-                        }
+                for key in fields.keys() {
+                    if let Some(new_val) = self.env.get(key) {
+                        inst.set_field(key.clone(), new_val.clone());
                     }
-                    self.env.pop_scope();
-                    self.env.define_or_set(var_name, Value::Instance(updated));
-                } else {
-                    self.env.pop_scope();
                 }
+                self.env.pop_scope();
                 return Ok(result);
             }
         }
@@ -643,13 +638,14 @@ impl Interpreter {
         match value {
             Value::Instance(inst) => {
                 let mut entries = Vec::new();
-                for (name, val) in &inst.fields {
+                let fields = inst.snapshot_fields();
+                for (name, val) in &fields {
                     let field_map = vec![
                         (Value::Text("name".to_string()), Value::Text(name.clone())),
                         (Value::Text("value".to_string()), val.clone()),
                         (Value::Text("type".to_string()), Value::Text(val.type_name().to_string())),
                     ];
-                    entries.push(Value::Map(field_map));
+                    entries.push(Value::Map(OboMap::from_entries(field_map)));
                 }
                 // Also include __type
                 let type_map = vec![
@@ -657,7 +653,7 @@ impl Interpreter {
                     (Value::Text("value".to_string()), Value::Text(inst.type_name.clone())),
                     (Value::Text("type".to_string()), Value::Text("text".to_string())),
                 ];
-                entries.insert(0, Value::Map(type_map));
+                entries.insert(0, Value::Map(OboMap::from_entries(type_map)));
                 Value::List(entries)
             }
             _ => {
@@ -666,7 +662,7 @@ impl Interpreter {
                     (Value::Text("type".to_string()), Value::Text(value.type_name().to_string())),
                     (Value::Text("value".to_string()), value.clone()),
                 ];
-                Value::List(vec![Value::Map(info)])
+                Value::List(vec![Value::Map(OboMap::from_entries(info))])
             }
         }
     }

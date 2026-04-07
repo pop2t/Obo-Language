@@ -1,0 +1,100 @@
+entity Row
+{
+    id;
+    data;
+}
+
+function sort_rows(rows, column, ascending)
+{
+    result = [];
+    remaining = rows;
+    while (remaining.count > 0)
+    {
+        best = 0;
+        count (i = 1, remaining.count)
+        {
+            a = remaining[i].data[column];
+            b = remaining[best].data[column];
+            if (ascending and a < b) { best = i; }
+            if (not ascending and a > b) { best = i; }
+        }
+        result = result.add(remaining[best]);
+        remaining = remaining.removeAt(best);
+    }
+    out result;
+}
+
+actor Table
+{
+    public name;
+    public columns;
+    public rows;
+    public next_id;
+
+    shared function create(tname, cols)
+    {
+        out Table { name = tname; columns = cols; rows = []; next_id = 1; };
+    }
+
+    function insert(record)
+    {
+        r = Row { id = next_id; data = record; };
+        rows = rows.add(r);
+        next_id = next_id + 1;
+        out r.id;
+    }
+
+    function where(pred)
+    {
+        current = rows;
+        filtered = current.filter(pred);
+        show "inside_filtered=" + filtered.count;
+        t = Table.create(name, columns);
+        t.rows = filtered;
+        show "inside_where_t_rows=" + t.rows.count;
+        out t;
+    }
+
+    function order_by(column, ascending)
+    {
+        sorted = sort_rows(rows, column, ascending);
+        show "inside_sorted=" + sorted.count;
+        t = Table.create(name, columns);
+        t.rows = sorted;
+        show "inside_order_t_rows=" + t.rows.count;
+        out t;
+    }
+}
+
+function build_table(n)
+{
+    departments = ["Engineering", "Marketing", "HR", "Finance", "Sales", "Support", "Legal", "R&D"];
+    levels = ["Junior", "Mid", "Senior", "Lead", "Principal"];
+
+    t = Table.create("employees", ["name", "department", "salary", "age", "level"]);
+
+    count(i = 0, n)
+    {
+        t.insert([
+            "name": "emp_" + i,
+            "department": departments[i % 8],
+            "salary": 40000 + (i * 37 + 17) % 80000,
+            "age": 22 + i % 30,
+            "level": levels[i % 5]
+        ]);
+    }
+
+    out t;
+}
+
+function main()
+{
+    t = build_table(500);
+    show "outer_rows=" + t.rows.count;
+    eng = t.where(action(r) { out r.data["department"] == "Engineering"; });
+    show "outer_eng_rows=" + eng.rows.count;
+    sorted = t.order_by("salary", false);
+    show "outer_sorted_rows=" + sorted.rows.count;
+}
+
+main();

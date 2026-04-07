@@ -1,0 +1,43 @@
+entity Row
+{
+    id;
+    data;
+}
+
+actor Table
+{
+    public rows;
+
+    shared function create()
+    {
+        out Table { rows = []; };
+    }
+
+    function insert(record)
+    {
+        rows = rows.add(Row { id = rows.count + 1; data = record; });
+    }
+
+    function where(pred)
+    {
+        current = rows;
+        filtered = current.filter(pred);
+        t = Table.create();
+        t.rows = filtered;
+        out t;
+    }
+}
+
+function main()
+{
+    t = Table.create();
+    t.insert(["department": "Engineering"]);
+    t.insert(["department": "Marketing"]);
+    t.insert(["department": "Engineering"]);
+    show "before=" + t.rows.count;
+    eng = t.where(action(r) { out r.data["department"] == "Engineering"; });
+    show "after=" + t.rows.count;
+    show "eng=" + eng.rows.count;
+}
+
+main();

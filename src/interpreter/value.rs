@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -18,7 +19,7 @@ pub enum Value {
     Set(Vec<Value>),
     Queue(Vec<Value>),
     Stack(Vec<Value>),
-    Map(Vec<(Value, Value)>),
+    Map(OboMap),
     Instance(OboInstance),
     EventRef(OboEventRef),
     Task(OboTask),
@@ -41,7 +42,29 @@ pub enum Value {
 pub struct OboInstance {
     pub instance_id: u64,
     pub type_name: String,
-    pub fields: HashMap<String, Value>,
+    pub fields: Arc<Mutex<HashMap<String, Value>>>,
+}
+
+impl OboInstance {
+    pub fn new(instance_id: u64, type_name: String, fields: HashMap<String, Value>) -> Self {
+        Self {
+            instance_id,
+            type_name,
+            fields: Arc::new(Mutex::new(fields)),
+        }
+    }
+
+    pub fn get_field(&self, name: &str) -> Option<Value> {
+        self.fields.lock().unwrap().get(name).cloned()
+    }
+
+    pub fn set_field(&self, name: String, value: Value) {
+        self.fields.lock().unwrap().insert(name, value);
+    }
+
+    pub fn snapshot_fields(&self) -> HashMap<String, Value> {
+        self.fields.lock().unwrap().clone()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +109,67 @@ pub struct OboAction {
 pub enum ActionBody {
     Block(Vec<Statement>),
     Expr(Box<crate::parser::ast::Expr>),
+}
+
+/// Ordered hash map for OBO map values. Preserves insertion order with O(1) lookups.
+#[derive(Debug, Clone)]
+pub struct OboMap {
+    entries: Vec<(Value, Value)>,
+    index: HashMap<Value, usize>,
+}
+
+impl OboMap {
+    pub fn new() -> Self {
+        OboMap { entries: Vec::new(), index: HashMap::new() }
+    }
+
+    pub fn from_entries(entries: Vec<(Value, Value)>) -> Self {
+        let mut index = HashMap::with_capacity(entries.len());
+        for (i, (k, _)) in entries.iter().enumerate() {
+            index.insert(k.clone(), i);
+        }
+        OboMap { entries, index }
+    }
+
+    pub fn get(&self, key: &Value) -> Option<&Value> {
+        self.index.get(key).map(|&i| &self.entries[i].1)
+    }
+
+    pub fn has(&self, key: &Value) -> bool {
+        self.index.contains_key(key)
+    }
+
+    pub fn set(&mut self, key: Value, val: Value) {
+        if let Some(&i) = self.index.get(&key) {
+            self.entries[i].1 = val;
+        } else {
+            let i = self.entries.len();
+            self.index.insert(key.clone(), i);
+            self.entries.push((key, val));
+        }
+    }
+
+    pub fn remove(&self, key: &Value) -> Self {
+        let entries: Vec<(Value, Value)> = self.entries.iter()
+            .filter(|(k, _)| k != key)
+            .cloned()
+            .collect();
+        Self::from_entries(entries)
+    }
+
+    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    pub fn iter(&self) -> std::slice::Iter<'_, (Value, Value)> { self.entries.iter() }
+    pub fn keys(&self) -> impl Iterator<Item = &Value> { self.entries.iter().map(|(k, _)| k) }
+    pub fn values(&self) -> impl Iterator<Item = &Value> { self.entries.iter().map(|(_, v)| v) }
+    pub fn entries(&self) -> &[(Value, Value)] { &self.entries }
+    pub fn into_entries(self) -> Vec<(Value, Value)> { self.entries }
+}
+
+impl PartialEq for OboMap {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
 }
 
 impl Value {
@@ -224,7 +308,8 @@ impl fmt::Display for Value {
             }
             Value::Instance(inst) => {
                 write!(f, "{} {{ ", inst.type_name)?;
-                for (i, (k, v)) in inst.fields.iter().enumerate() {
+                let fields = inst.snapshot_fields();
+                for (i, (k, v)) in fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, "; ")?;
                     }
@@ -287,6 +372,7 @@ impl PartialEq for Value {
             (Value::Task(a), Value::Task(b)) => a.task_id == b.task_id,
             (Value::Channel(a), Value::Channel(b)) => Arc::ptr_eq(&a.inner, &b.inner),
             (Value::Atomic(a), Value::Atomic(b)) => Arc::ptr_eq(&a.inner, &b.inner),
+            (Value::Instance(a), Value::Instance(b)) => a.instance_id == b.instance_id,
             (Value::Byte(a), Value::Byte(b)) => a == b,
             (Value::Pointer(a), Value::Pointer(b)) => a == b,
             (Value::Pair(a1, a2), Value::Pair(b1, b2)) => a1 == b1 && a2 == b2,
@@ -296,6 +382,27 @@ impl PartialEq for Value {
             (Value::Grid3D { x: x1, y: y1, z: z1, data: d1 }, Value::Grid3D { x: x2, y: y2, z: z2, data: d2 }) => x1 == x2 && y1 == y2 && z1 == z2 && d1 == d2,
             (Value::ChoiceValue(_, a, _), Value::ChoiceValue(_, b, _)) => a == b,
             _ => false,
+        }
+    }
+}
+
+impl Eq for Value {}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            // Number and Decimal share tag 0 so Number(1) and Decimal(1.0) hash equally
+            Value::Number(n) => { 0u8.hash(state); (*n as f64).to_bits().hash(state); }
+            Value::Decimal(f) => { 0u8.hash(state); f.to_bits().hash(state); }
+            Value::Text(s) => s.hash(state),
+            Value::Char(c) => c.hash(state),
+            Value::Flag(b) => b.hash(state),
+            Value::Byte(b) => b.hash(state),
+            Value::Pointer(p) => p.hash(state),
+            Value::Instance(i) => i.instance_id.hash(state),
+            Value::Null => {}
+            _ => {}
         }
     }
 }

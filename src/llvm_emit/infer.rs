@@ -321,16 +321,74 @@ pub fn resolve_instance_method<'a>(ir: &'a IrProgram, method: &str, argc: usize)
     }
 }
 
+/// Infer entity field types by scanning all `MakeEntity` instructions across the program.
+/// Returns entity_name → { field_name → LowType }.
+pub fn infer_entity_field_types(
+    ir: &IrProgram,
+    fn_ret: &HashMap<String, LowType>,
+) -> HashMap<String, HashMap<String, LowType>> {
+    let mut eft: HashMap<String, HashMap<String, LowType>> = HashMap::new();
+    for f in &ir.functions {
+        let (reg_ty, var_ty) = infer_function_types_inner(f, ir, fn_ret, &HashMap::new());
+        for block in &f.blocks {
+            for inst in &block.insts {
+                if let Inst::MakeEntity(_, type_name, fields) = inst {
+                    let entry = eft.entry(type_name.clone()).or_insert_with(HashMap::new);
+                    for (fname, op) in fields {
+                        // Skip null operands — Constant::Null maps to I64 in const_ty
+                        // but the runtime stores it as OBO_VTAG_NULL, so treating it as
+                        // I64 would give wrong semantics (0 instead of "null").
+                        if matches!(op, Operand::Const(Constant::Null)) {
+                            // Null conflicts with any concrete type — mark as Dyn.
+                            entry.insert(fname.clone(), LowType::Dyn);
+                            continue;
+                        }
+                        if let Some(t) = operand_ty(op, &reg_ty, &var_ty) {
+                            if matches!(t, LowType::F64 | LowType::I64) {
+                                let prev = entry.get(fname.as_str()).copied();
+                                match prev {
+                                    None => { entry.insert(fname.clone(), t); }
+                                    Some(pt) if pt == t => {} // consistent
+                                    Some(LowType::Dyn) => {} // already conflicted
+                                    _ => { entry.insert(fname.clone(), LowType::Dyn); } // conflict
+                                }
+                            } else {
+                                // Non-numeric type — mark as Dyn to avoid conflicts.
+                                entry.insert(fname.clone(), LowType::Dyn);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eft
+}
+
 /// Infer the low-level type of each register and variable in a function.
 pub fn infer_function_types(
     func: &IrFunction,
     ir: &IrProgram,
     fn_ret: &HashMap<String, LowType>,
 ) -> (Vec<Option<LowType>>, HashMap<String, LowType>) {
+    // Pre-compute entity field types for typed GetField results.
+    let eft = infer_entity_field_types(ir, fn_ret);
+    infer_function_types_inner(func, ir, fn_ret, &eft)
+}
+
+fn infer_function_types_inner(
+    func: &IrFunction,
+    ir: &IrProgram,
+    fn_ret: &HashMap<String, LowType>,
+    entity_field_types: &HashMap<String, HashMap<String, LowType>>,
+) -> (Vec<Option<LowType>>, HashMap<String, LowType>) {
     let max_reg = max_reg_in_function(func);
     let mut reg_ty: Vec<Option<LowType>> = vec![None; max_reg.max(1) as usize];
     let mut var_ty: HashMap<String, LowType> = HashMap::new();
     let mut reg_source_var: HashMap<Reg, String> = HashMap::new();
+    // Track which entity type name a register/variable holds (e.g. "Body").
+    let mut reg_entity_name: HashMap<Reg, String> = HashMap::new();
+    let mut var_entity_name: HashMap<String, String> = HashMap::new();
 
     for (i, p) in func.params.iter().enumerate() {
         let pt = func.param_types.get(i).copied().unwrap_or(IrParamType::I64);
@@ -357,12 +415,17 @@ pub fn infer_function_types(
                         if let Some(name) = reg_source_var.get(src).cloned() {
                             reg_source_var.insert(*r, name);
                         }
+                        // Propagate entity type name through Copy.
+                        if let Some(ename) = reg_entity_name.get(src).cloned() {
+                            reg_entity_name.insert(*r, ename);
+                        }
                     }
                 }
                 Inst::BinOp(r, op, lhs, rhs) => {
                     let lo = operand_ty(lhs, &reg_ty, &var_ty);
                     let ro = operand_ty(rhs, &reg_ty, &var_ty);
                     let either_f64 = lo == Some(LowType::F64) || ro == Some(LowType::F64);
+                    let both_dyn = lo == Some(LowType::Dyn) && ro == Some(LowType::Dyn);
                     let t = match op {
                         BinOp::Add => {
                             let any_str = lo == Some(LowType::Str) || ro == Some(LowType::Str);
@@ -370,6 +433,8 @@ pub fn infer_function_types(
                                 || matches!(ro, Some(LowType::List | LowType::Map | LowType::Entity));
                             if any_str || any_heap {
                                 LowType::Str
+                            } else if both_dyn {
+                                LowType::Dyn
                             } else if either_f64 {
                                 LowType::F64
                             } else {
@@ -377,7 +442,7 @@ pub fn infer_function_types(
                             }
                         }
                         BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                            if either_f64 { LowType::F64 } else { LowType::I64 }
+                            if both_dyn { LowType::Dyn } else if either_f64 { LowType::F64 } else { LowType::I64 }
                         }
                         BinOp::Concat => LowType::Str,
                         BinOp::Eq
@@ -409,10 +474,20 @@ pub fn infer_function_types(
                     if let Some(t) = var_ty.get(name).copied() {
                         set_reg(&mut reg_ty, *r, t);
                     }
+                    // Propagate entity type name through Load.
+                    if let Some(ename) = var_entity_name.get(name).cloned() {
+                        reg_entity_name.insert(*r, ename);
+                    }
                 }
                 Inst::Store(name, op) => {
                     if let Some(t) = operand_ty(op, &reg_ty, &var_ty) {
                         var_ty.insert(name.clone(), t);
+                    }
+                    // Propagate entity type name through Store.
+                    if let Operand::Reg(src) = op {
+                        if let Some(ename) = reg_entity_name.get(src).cloned() {
+                            var_entity_name.insert(name.clone(), ename);
+                        }
                     }
                 }
                 Inst::Call(r, name, _) => {
@@ -457,13 +532,25 @@ pub fn infer_function_types(
                         if name == "empty" {
                             set_reg(&mut reg_ty, *r, LowType::Bool);
                         }
-                    } else if ot == Some(LowType::Map) || ot == Some(LowType::Entity) {
+                    } else if ot == Some(LowType::Map) {
                         set_reg(&mut reg_ty, *r, LowType::Dyn);
+                    } else if ot == Some(LowType::Entity) {
+                        let field_ty = resolve_entity_field_type(
+                            obj, name, &reg_entity_name, &var_entity_name,
+                            &reg_source_var, entity_field_types, ir,
+                        );
+                        set_reg(&mut reg_ty, *r, field_ty);
                     } else if ot == Some(LowType::Dyn) {
                         let t = match name.as_str() {
                             "count" | "length" | "value" | "load" => LowType::I64,
                             "empty" => LowType::Bool,
-                            _ => LowType::Dyn,
+                            _ => {
+                                // Try entity field type inference for Dyn receivers too.
+                                resolve_entity_field_type(
+                                    obj, name, &reg_entity_name, &var_entity_name,
+                                    &reg_source_var, entity_field_types, ir,
+                                )
+                            }
                         };
                         set_reg(&mut reg_ty, *r, t);
                     }
@@ -484,7 +571,10 @@ pub fn infer_function_types(
                     }
                 }
                 Inst::MakeMap(r, _) => set_reg(&mut reg_ty, *r, LowType::Map),
-                Inst::MakeEntity(r, _, _) => set_reg(&mut reg_ty, *r, LowType::Entity),
+                Inst::MakeEntity(r, name, _) => {
+                    set_reg(&mut reg_ty, *r, LowType::Entity);
+                    reg_entity_name.insert(*r, name.clone());
+                }
                 Inst::MakeClosure(r, _, _) => set_reg(&mut reg_ty, *r, LowType::Closure),
                 Inst::CallClosure(r, _, _) => set_reg(&mut reg_ty, *r, LowType::I64),
                 Inst::RunTask(r, _) => set_reg(&mut reg_ty, *r, LowType::Task),
@@ -567,10 +657,20 @@ pub fn infer_function_types(
                         if matches!(ot, Some(LowType::List | LowType::Map | LowType::MixedList | LowType::Dyn | LowType::Str)) {
                             set_reg(&mut reg_ty, *r, LowType::Bool);
                         }
-                    } else if ot == Some(LowType::Map) || ot == Some(LowType::Entity) {
+                    } else if ot == Some(LowType::Map) {
                         set_reg(&mut reg_ty, *r, LowType::Dyn);
+                    } else if ot == Some(LowType::Entity) {
+                        let field_ty = resolve_entity_field_type(
+                            obj, name, &reg_entity_name, &var_entity_name,
+                            &reg_source_var, entity_field_types, ir,
+                        );
+                        set_reg(&mut reg_ty, *r, field_ty);
                     } else if ot == Some(LowType::Dyn) {
-                        set_reg(&mut reg_ty, *r, LowType::Dyn);
+                        let field_ty = resolve_entity_field_type(
+                            obj, name, &reg_entity_name, &var_entity_name,
+                            &reg_source_var, entity_field_types, ir,
+                        );
+                        set_reg(&mut reg_ty, *r, field_ty);
                     }
                 }
                 if let Inst::GetIndex(r, obj, _) = inst {
@@ -715,6 +815,7 @@ pub fn infer_function_types(
                     let lo = operand_ty(lhs, &reg_ty, &var_ty);
                     let ro = operand_ty(rhs, &reg_ty, &var_ty);
                     let either_f64 = lo == Some(LowType::F64) || ro == Some(LowType::F64);
+                    let both_dyn = lo == Some(LowType::Dyn) && ro == Some(LowType::Dyn);
                     let new_t = match op {
                         BinOp::Add => {
                             let any_str = lo == Some(LowType::Str) || ro == Some(LowType::Str);
@@ -722,6 +823,8 @@ pub fn infer_function_types(
                                 || matches!(ro, Some(LowType::List | LowType::Map | LowType::Entity));
                             if any_str || any_heap {
                                 Some(LowType::Str)
+                            } else if both_dyn {
+                                Some(LowType::Dyn)
                             } else if either_f64 {
                                 Some(LowType::F64)
                             } else {
@@ -729,7 +832,9 @@ pub fn infer_function_types(
                             }
                         }
                         BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                            if either_f64 {
+                            if both_dyn {
+                                Some(LowType::Dyn)
+                            } else if either_f64 {
                                 Some(LowType::F64)
                             } else {
                                 None
@@ -780,6 +885,54 @@ pub(crate) fn operand_ty(
         Operand::Const(c) => Some(const_ty(c)),
         Operand::Reg(r) => reg_ty.get(r.0 as usize).copied().flatten(),
     }
+}
+
+/// Resolve the field type for a GetField on an Entity-typed register.
+/// 1. If we know the exact entity type name (via reg_entity_name tracking), look up the field type.
+/// 2. Otherwise, if only one entity type in the program has that field, use that type's field layout.
+/// Only returns concrete numeric types (F64, I64) that we can load inline from slots.
+/// Falls back to Dyn for pointer types (Str, Entity, List, etc.) to avoid misinterpreting
+/// OboValue* pointers as raw data pointers.
+fn resolve_entity_field_type(
+    obj: &Operand,
+    field_name: &str,
+    reg_entity_name: &HashMap<Reg, String>,
+    var_entity_name: &HashMap<String, String>,
+    reg_source_var: &HashMap<Reg, String>,
+    entity_field_types: &HashMap<String, HashMap<String, LowType>>,
+    _ir: &IrProgram,
+) -> LowType {
+    // Try to find the entity type name from register or variable tracking.
+    let ename = match obj {
+        Operand::Reg(r) => {
+            reg_entity_name.get(r).cloned().or_else(|| {
+                reg_source_var.get(r).and_then(|v| var_entity_name.get(v).cloned())
+            })
+        }
+        _ => None,
+    };
+    if let Some(ref ename) = ename {
+        if let Some(fields) = entity_field_types.get(ename) {
+            if let Some(ft) = fields.get(field_name) {
+                if matches!(ft, LowType::F64 | LowType::I64) {
+                    return *ft;
+                }
+            }
+        }
+    }
+    // Fallback: if all entity types defining this field agree on the type, use it.
+    let mut candidates: Vec<&LowType> = Vec::new();
+    for (_ent_name, fields) in entity_field_types {
+        if let Some(ft) = fields.get(field_name) {
+            candidates.push(ft);
+        }
+    }
+    if !candidates.is_empty() && candidates.iter().all(|t| **t == *candidates[0]) {
+        if matches!(candidates[0], LowType::F64 | LowType::I64) {
+            return *candidates[0];
+        }
+    }
+    LowType::Dyn
 }
 
 fn max_reg_operand(op: &Operand) -> u32 {

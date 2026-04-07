@@ -1,0 +1,29 @@
+actor Box
+{
+    public rows;
+
+    shared function create()
+    {
+        out Box { rows = []; };
+    }
+
+    function clone_with_rows()
+    {
+        t = Box.create();
+        t.rows = [1, 2, 3];
+        out t;
+    }
+}
+
+function main()
+{
+    b = Box.create();
+    c = b.clone_with_rows();
+    show "count=" + c.rows.count;
+    if (c.rows.count > 0)
+    {
+        show "first=" + c.rows[0];
+    }
+}
+
+main();

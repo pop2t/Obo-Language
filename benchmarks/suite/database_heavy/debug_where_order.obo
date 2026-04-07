@@ -1,0 +1,78 @@
+entity Row
+{
+    id;
+    data;
+}
+
+function sort_rows(rows, column, ascending)
+{
+    result = [];
+    remaining = rows;
+    while (remaining.count > 0)
+    {
+        best = 0;
+        count (i = 1, remaining.count)
+        {
+            a = remaining[i].data[column];
+            b = remaining[best].data[column];
+            if (ascending and a < b) { best = i; }
+            if (not ascending and a > b) { best = i; }
+        }
+        result = result.add(remaining[best]);
+        remaining = remaining.removeAt(best);
+    }
+    out result;
+}
+
+actor Table
+{
+    public rows;
+
+    shared function create()
+    {
+        out Table { rows = []; };
+    }
+
+    function insert(record)
+    {
+        rows = rows.add(Row { id = rows.count + 1; data = record; });
+    }
+
+    function where(pred)
+    {
+        current = rows;
+        filtered = current.filter(pred);
+        show "inside_filtered=" + filtered.count;
+        t = Table.create();
+        t.rows = filtered;
+        show "inside_where_t_rows=" + t.rows.count;
+        out t;
+    }
+
+    function order_by(column, ascending)
+    {
+        sorted = sort_rows(rows, column, ascending);
+        show "inside_sorted=" + sorted.count;
+        t = Table.create();
+        t.rows = sorted;
+        show "inside_order_t_rows=" + t.rows.count;
+        out t;
+    }
+}
+
+function main()
+{
+    t = Table.create();
+    t.insert(["department": "Engineering", "salary": 10]);
+    t.insert(["department": "Marketing", "salary": 20]);
+    t.insert(["department": "Engineering", "salary": 30]);
+    show "source_rows=" + t.rows.count;
+
+    eng = t.where(action(r) { out r.data["department"] == "Engineering"; });
+    show "outer_eng_rows=" + eng.rows.count;
+
+    sorted = t.order_by("salary", false);
+    show "outer_sorted_rows=" + sorted.rows.count;
+}
+
+main();

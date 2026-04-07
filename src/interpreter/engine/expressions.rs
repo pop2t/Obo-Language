@@ -4,7 +4,7 @@ use crate::parser::ast::*;
 use crate::stdlib;
 
 use super::super::value::{
-    ActionBody, OboAction, OboEventRef, OboFunction, OboInstance, Value,
+    ActionBody, OboAction, OboEventRef, OboFunction, OboInstance, OboMap, Value,
 };
 use super::{Interpreter, Signal, TypeDef};
 
@@ -90,13 +90,11 @@ impl Interpreter {
                             format!("Obo: Index {} is out of bounds 😬", i)
                         })
                     }
-                    (Value::Map(pairs), _) => {
-                        for (k, v) in pairs {
-                            if k == &idx {
-                                return Ok(v.clone());
-                            }
+                    (Value::Map(map), _) => {
+                        match map.get(&idx) {
+                            Some(v) => Ok(v.clone()),
+                            None => Ok(Value::Null),
                         }
-                        Ok(Value::Null)
                     }
                     _ => Err(format!("Obo: Can't index into {} 🤨", object.type_name())),
                 }
@@ -113,7 +111,7 @@ impl Interpreter {
                     .iter()
                     .map(|(k, v)| Ok((self.eval_expr(k)?, self.eval_expr(v)?)))
                     .collect::<Result<_, String>>()?;
-                Ok(Value::Map(items))
+                Ok(Value::Map(OboMap::from_entries(items)))
             }
             Expr::EntityInit(name, fields, _) => {
                 // Block instantiation of template actors
@@ -127,11 +125,11 @@ impl Interpreter {
                     let value = self.eval_expr(&field.value)?;
                     field_map.insert(field.name.clone(), value);
                 }
-                Ok(Value::Instance(OboInstance {
-                    instance_id: self.fresh_instance_id(),
-                    type_name: name.clone(),
-                    fields: field_map,
-                }))
+                Ok(Value::Instance(OboInstance::new(
+                    self.fresh_instance_id(),
+                    name.clone(),
+                    field_map,
+                )))
             }
             Expr::Cast(_, operand, _) => {
                 let val = self.eval_expr(operand)?;
@@ -256,7 +254,8 @@ impl Interpreter {
                     if let ActorMember::Operator(op_decl) = m {
                         if op_decl.op == op_str {
                             self.env.push_scope();
-                            for (k, v) in &inst.fields {
+                            let fields = inst.snapshot_fields();
+                            for (k, v) in &fields {
                                 self.env.define(k, v.clone());
                             }
                             self.env.define(&op_decl.param.name, rhs.clone());
@@ -355,7 +354,7 @@ impl Interpreter {
     ) -> Result<Value, String> {
         match object {
             Value::Instance(inst) => {
-                if let Some(val) = inst.fields.get(member) {
+                if let Some(val) = inst.get_field(member) {
                     return Ok(val.clone());
                 }
 
@@ -371,7 +370,8 @@ impl Interpreter {
                                     if let Some(ref getter) = prop.getter {
                                         // Execute getter with `self` fields in scope
                                         self.env.push_scope();
-                                        for (k, v) in &inst.fields {
+                                        let fields = inst.snapshot_fields();
+                                        for (k, v) in &fields {
                                             self.env.define(k, v.clone());
                                         }
                                         let signal = self.exec_statements(getter)?;
@@ -429,8 +429,8 @@ impl Interpreter {
                 }
                 Ok(Value::BuiltinFn(format!("list.{}", member)))
             }
-            Value::Map(pairs) => {
-                if let Some(val) = stdlib::collections::map_member(pairs, member) {
+            Value::Map(map) => {
+                if let Some(val) = stdlib::collections::map_member(map, member) {
                     return Ok(val);
                 }
                 Ok(Value::BuiltinFn(format!("map.{}", member)))

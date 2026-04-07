@@ -48,6 +48,50 @@ fn param_low_type(f: &IrFunction, index: usize) -> LowType {
     }
 }
 
+fn llvm_param_low_type(param_ty: &str) -> Option<LowType> {
+    match param_ty.trim() {
+        "double" => Some(LowType::F64),
+        "i64" => Some(LowType::I64),
+        "i8*" => Some(LowType::Dyn),
+        _ => None,
+    }
+}
+
+fn extern_param_low_type(name: &str, index: usize) -> Option<LowType> {
+    match name {
+        "obo_prompt" | "obo_str_truthy" if index == 0 => Some(LowType::Str),
+        "__sys_File_read"
+        | "__sys_File_exists"
+        | "__sys_File_delete"
+        | "__sys_File_readLines"
+        | "__sys_Convert_toNumber"
+        | "__sys_Convert_toDecimal" if index == 0 => Some(LowType::Str),
+        "__sys_File_write" | "__sys_File_append" => {
+            if index < 2 { Some(LowType::Str) } else { None }
+        }
+        "__sys_Convert_toText"
+        | "__sys_Convert_toFlag"
+        | "__sys_Convert_toChar"
+        | "__sys_Time_sleep"
+        | "__sys_pointer_alloc"
+        | "__sys_pointer_free" if index == 0 => Some(LowType::I64),
+        "__sys_Math_abs" | "__sys_Math_sign" | "__sys_Math_floor" | "__sys_Math_ceil"
+        | "__sys_Math_round" | "__sys_Math_sqrt" | "__sys_Math_sin" | "__sys_Math_cos"
+        | "__sys_Math_tan" | "__sys_Math_asin" | "__sys_Math_acos" | "__sys_Math_atan"
+        | "__sys_Math_log" | "__sys_Math_log10" if index == 0 => Some(LowType::F64),
+        "__sys_Math_min" | "__sys_Math_max" | "__sys_Math_randomInt" => {
+            if index < 2 { Some(LowType::I64) } else { None }
+        }
+        "__sys_Math_pow" | "__sys_Math_atan2" => {
+            if index < 2 { Some(LowType::F64) } else { None }
+        }
+        "__sys_Math_lerp" | "__sys_Math_clamp" => {
+            if index < 3 { Some(LowType::F64) } else { None }
+        }
+        _ => None,
+    }
+}
+
 fn rewrite_phi_blocks(blocks: &[BasicBlock]) -> Vec<BasicBlock> {
     let mut edge_copies: HashMap<(BlockId, BlockId), Vec<(Reg, Operand)>> = HashMap::new();
     for block in blocks {
@@ -329,13 +373,93 @@ pub(super) fn emit_function(
         }
     }
 
+    // ----- GC root registration -----
+    // Root named variables unconditionally (they persist across the function).
+    // For temporary registers, only root those that hold pointer types and are
+    // live across a Call/CallMethod/CallClosure (which might trigger GC).
     let mut gc_root_count = 0i64;
+
+    // Compute which pointer registers need rooting: ones live across a call.
+    let needs_root = {
+        let mut needs = HashSet::new();
+        // Collect all register reads/writes and identify call boundaries.
+        // A register needs rooting if it's written before AND read after any Call.
+        let mut defined_before_call: HashSet<u32> = HashSet::new();
+        let mut seen_call = false;
+        for block in &emitted_blocks {
+            defined_before_call.clear();
+            seen_call = false;
+            for inst in &block.insts {
+                // Collect operand reads — if seen_call and reg was defined before, it needs root
+                let mut check_operand = |op: &Operand| {
+                    if let Operand::Reg(r) = op {
+                        if seen_call && defined_before_call.contains(&r.0) {
+                            needs.insert(r.0);
+                        }
+                    }
+                };
+                match inst {
+                    Inst::Copy(_, op) | Inst::UnaryOp(_, _, op)
+                    | Inst::Show(op) | Inst::Store(_, op) => { check_operand(op); }
+                    Inst::BinOp(_, _, l, r) | Inst::SetField(l, _, r)
+                    | Inst::GetIndex(_, l, r) => { check_operand(l); check_operand(r); }
+                    Inst::SetIndex(a, b, c) => { check_operand(a); check_operand(b); check_operand(c); }
+                    Inst::GetField(_, op, _) => { check_operand(op); }
+                    Inst::Call(_, _, args) => {
+                        for a in args { check_operand(a); }
+                    }
+                    Inst::CallMethod(_, obj, _, args) => {
+                        check_operand(obj);
+                        for a in args { check_operand(a); }
+                    }
+                    Inst::CallClosure(_, cls, args) => {
+                        check_operand(cls);
+                        for a in args { check_operand(a); }
+                    }
+                    Inst::MakeList(_, ops) => { for o in ops { check_operand(o); } }
+                    Inst::MakeMap(_, pairs) => {
+                        for (k, v) in pairs { check_operand(k); check_operand(v); }
+                    }
+                    Inst::MakeEntity(_, _, fields) => {
+                        for (_, v) in fields { check_operand(v); }
+                    }
+                    Inst::MakeClosure(_, _, caps) => { for c in caps { check_operand(c); } }
+                    Inst::Return(ops) => { for o in ops { check_operand(o); } }
+                    Inst::Branch(op, _, _) => { check_operand(op); }
+                    Inst::Phi(_, pairs) => { for (op, _) in pairs { check_operand(op); } }
+                    Inst::RunTask(_, op) | Inst::WaitTask(op) => { check_operand(op); }
+                    _ => {}
+                }
+                // Record destination register as defined
+                match inst {
+                    Inst::Const(r, _) | Inst::Copy(r, _) | Inst::BinOp(r, _, _, _)
+                    | Inst::UnaryOp(r, _, _) | Inst::Load(r, _)
+                    | Inst::GetField(r, _, _) | Inst::GetIndex(r, _, _)
+                    | Inst::MakeList(r, _) | Inst::MakeMap(r, _) | Inst::MakeEntity(r, _, _)
+                    | Inst::MakeClosure(r, _, _) | Inst::Phi(r, _) | Inst::RunTask(r, _) => {
+                        defined_before_call.insert(r.0);
+                    }
+                    Inst::Call(r, _, _) | Inst::CallMethod(r, _, _, _) | Inst::CallClosure(r, _, _) => {
+                        defined_before_call.insert(r.0);
+                        seen_call = true;
+                    }
+                    _ => {}
+                }
+                // Show can trigger GC via string formatting
+                if matches!(inst, Inst::Show(_)) {
+                    seen_call = true;
+                }
+            }
+        }
+        needs
+    };
+
     for r in 0..max_r {
         let ty = reg_ty
             .get(r as usize)
             .and_then(|x| *x)
             .unwrap_or(LowType::I64);
-        if ty.is_ptr() {
+        if ty.is_ptr() && needs_root.contains(&r) {
             s.push_str(&format!(
                 "  call void @obo_gc_push_root(i8** %reg_{}_ptr)\n",
                 r
@@ -365,10 +489,14 @@ pub(super) fn emit_function(
     }
 
     let mut tmp = 0u32;
+    let mut entity_ptr_cache: HashMap<String, String> = HashMap::new();
+    let mut reg_source_var: HashMap<u32, String> = HashMap::new();
     for (bi, block) in emitted_blocks.iter().enumerate() {
         if bi > 0 {
             s.push_str(&format!("{}:\n", block_names[&block.id]));
         }
+        entity_ptr_cache.clear();
+        reg_source_var.clear();
         for inst in &block.insts {
             emit_inst(
                 &mut s,
@@ -383,6 +511,8 @@ pub(super) fn emit_function(
                 fn_ret,
                 gc_root_count,
                 bridge_ret_overrides,
+                &mut entity_ptr_cache,
+                &mut reg_source_var,
             )?;
         }
     }
@@ -623,6 +753,221 @@ fn emit_object_store_call(
     Ok(())
 }
 
+/// Look up a field name across all entity layouts. Returns Some(slot_index)
+/// if the field exists in at least one layout and all occurrences use the same index.
+fn resolve_field_slot(ir: &IrProgram, field_name: &str) -> Option<i32> {
+    let mut found_idx: Option<i32> = None;
+    for (_entity_name, fields) in &ir.entity_layouts {
+        if let Some(pos) = fields.iter().position(|f| f == field_name) {
+            let idx = pos as i32;
+            match found_idx {
+                Some(prev) if prev != idx => return None, // conflict
+                _ => found_idx = Some(idx),
+            }
+        }
+    }
+    found_idx
+}
+
+// ── Inline entity slot access constants (must match OboEntitySlotted layout in obo_rt.c) ──
+const SLOTTED_SLOTS_OFFSET: i64 = 32; // byte offset of `slots[]` flexible array member
+const OBOVALUE_SIZE: i64 = 16;        // sizeof(OboValue) = { u8 tag, 7 pad, 8 union }
+const OBOVALUE_UNION_OFFSET: i64 = 8; // byte offset of union `u` within OboValue
+// OboVTag enum values
+const OBO_VTAG_I64: u8 = 0;
+const OBO_VTAG_STR: u8 = 1;
+const OBO_VTAG_LIST: u8 = 2;
+const OBO_VTAG_MAP: u8 = 3;
+const OBO_VTAG_ENTITY: u8 = 4;
+const OBO_VTAG_F64: u8 = 5;
+const OBO_VTAG_BOOL: u8 = 6;
+const OBO_VTAG_NULL: u8 = 7;
+
+/// Emit inline GEP to get pointer to OboValue at entity slot[idx].
+fn emit_inline_slot_ptr(s: &mut String, tmp: &mut u32, entity_val: &str, slot_idx: i32) -> String {
+    let offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE;
+    let out = fresh_tmp(tmp);
+    s.push_str(&format!(
+        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+        out, entity_val, offset
+    ));
+    out
+}
+
+/// Emit inline store of a typed value into entity slot[idx].
+fn emit_inline_slot_store(
+    s: &mut String,
+    tmp: &mut u32,
+    entity_val: &str,
+    slot_idx: i32,
+    tag: u8,
+    value_val: &str,
+    llvm_store_type: &str,
+) {
+    let base_offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE;
+    // Store tag byte
+    let tag_ptr = fresh_tmp(tmp);
+    s.push_str(&format!(
+        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+        tag_ptr, entity_val, base_offset
+    ));
+    s.push_str(&format!("  store i8 {}, i8* {}\n", tag, tag_ptr));
+    // Store value into union
+    let val_offset = base_offset + OBOVALUE_UNION_OFFSET;
+    let val_byte_ptr = fresh_tmp(tmp);
+    s.push_str(&format!(
+        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+        val_byte_ptr, entity_val, val_offset
+    ));
+    let val_typed_ptr = fresh_tmp(tmp);
+    s.push_str(&format!(
+        "  {} = bitcast i8* {} to {}*\n",
+        val_typed_ptr, val_byte_ptr, llvm_store_type
+    ));
+    s.push_str(&format!(
+        "  store {} {}, {}* {}\n",
+        llvm_store_type, value_val, llvm_store_type, val_typed_ptr
+    ));
+}
+
+/// Emit inline null store into entity slot[idx].
+fn emit_inline_slot_store_null(
+    s: &mut String,
+    tmp: &mut u32,
+    entity_val: &str,
+    slot_idx: i32,
+) {
+    let base_offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE;
+    let tag_ptr = fresh_tmp(tmp);
+    s.push_str(&format!(
+        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+        tag_ptr, entity_val, base_offset
+    ));
+    s.push_str(&format!("  store i8 {}, i8* {}\n", OBO_VTAG_NULL, tag_ptr));
+    let val_offset = base_offset + OBOVALUE_UNION_OFFSET;
+    let val_byte_ptr = fresh_tmp(tmp);
+    s.push_str(&format!(
+        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+        val_byte_ptr, entity_val, val_offset
+    ));
+    let val_ptr = fresh_tmp(tmp);
+    s.push_str(&format!("  {} = bitcast i8* {} to i64*\n", val_ptr, val_byte_ptr));
+    s.push_str(&format!("  store i64 0, i64* {}\n", val_ptr));
+}
+
+/// Emit inline copy of a boxed OboValue* into entity slot[idx].
+fn emit_inline_slot_store_boxed(
+    s: &mut String,
+    tmp: &mut u32,
+    entity_val: &str,
+    slot_idx: i32,
+    boxed_val: &str,
+) {
+    let base_offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE;
+    // Load tag from source OboValue
+    let src_tag = fresh_tmp(tmp);
+    s.push_str(&format!("  {} = load i8, i8* {}\n", src_tag, boxed_val));
+    // Load union as i64 from source + 8
+    let src_u_ptr = fresh_tmp(tmp);
+    s.push_str(&format!(
+        "  {} = getelementptr i8, i8* {}, i64 8\n",
+        src_u_ptr, boxed_val
+    ));
+    let src_u_i64ptr = fresh_tmp(tmp);
+    s.push_str(&format!("  {} = bitcast i8* {} to i64*\n", src_u_i64ptr, src_u_ptr));
+    let src_u_val = fresh_tmp(tmp);
+    s.push_str(&format!("  {} = load i64, i64* {}\n", src_u_val, src_u_i64ptr));
+    // Store tag to destination slot
+    let dst_tag_ptr = fresh_tmp(tmp);
+    s.push_str(&format!(
+        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+        dst_tag_ptr, entity_val, base_offset
+    ));
+    s.push_str(&format!("  store i8 {}, i8* {}\n", src_tag, dst_tag_ptr));
+    // Store union to destination slot + 8
+    let dst_val_offset = base_offset + OBOVALUE_UNION_OFFSET;
+    let dst_val_ptr = fresh_tmp(tmp);
+    s.push_str(&format!(
+        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+        dst_val_ptr, entity_val, dst_val_offset
+    ));
+    let dst_val_i64ptr = fresh_tmp(tmp);
+    s.push_str(&format!("  {} = bitcast i8* {} to i64*\n", dst_val_i64ptr, dst_val_ptr));
+    s.push_str(&format!("  store i64 {}, i64* {}\n", src_u_val, dst_val_i64ptr));
+}
+
+/// Emit a direct slot set for MakeEntity (known slotted entity) — inline GEP stores.
+fn emit_entity_slot_set_call(
+    s: &mut String,
+    tmp: &mut u32,
+    obj_val: &str,
+    slot_idx: i32,
+    value_op: &Operand,
+    value_val: &str,
+    value_ty: LowType,
+) -> Result<(), String> {
+    if operand_is_null(value_op) {
+        emit_inline_slot_store_null(s, tmp, obj_val, slot_idx);
+        return Ok(());
+    }
+    match value_ty {
+        LowType::I64 => emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_I64, value_val, "i64"),
+        LowType::Bool => {
+            let coerced = coerce_value(s, tmp, value_val, value_ty, LowType::I64)?;
+            emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_BOOL, &coerced, "i64");
+        }
+        LowType::F64 => emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_F64, value_val, "double"),
+        LowType::Str => s.push_str(&format!(
+            "  call void @obo_entity_set_slot_str(i8* {}, i32 {}, i8* {})\n",
+            obj_val, slot_idx, value_val
+        )),
+        LowType::List | LowType::MixedList => emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_LIST, value_val, "i8*"),
+        LowType::Map => emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_MAP, value_val, "i8*"),
+        LowType::Entity => emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_ENTITY, value_val, "i8*"),
+        LowType::Dyn => emit_inline_slot_store_boxed(s, tmp, obj_val, slot_idx, value_val),
+        _ => return Err("native build: unsupported entity slot field type".into()),
+    }
+    Ok(())
+}
+
+/// Emit inline set-field for SetField (slotted entity, known slot index).
+fn emit_entity_sfs_call(
+    s: &mut String,
+    tmp: &mut u32,
+    obj_val: &str,
+    slot_idx: i32,
+    _key_ptr: &str,
+    value_op: &Operand,
+    value_val: &str,
+    value_ty: LowType,
+) -> Result<(), String> {
+    if operand_is_null(value_op) {
+        emit_inline_slot_store_null(s, tmp, obj_val, slot_idx);
+        return Ok(());
+    }
+    match value_ty {
+        LowType::I64 => emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_I64, value_val, "i64"),
+        LowType::Bool => {
+            let coerced = coerce_value(s, tmp, value_val, value_ty, LowType::I64)?;
+            emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_BOOL, &coerced, "i64");
+        }
+        LowType::F64 => emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_F64, value_val, "double"),
+        LowType::Str => s.push_str(&format!(
+            "  call void @obo_entity_sfs_str(i8* {}, i32 {}, i8* {}, i8* {})\n",
+            obj_val, slot_idx, _key_ptr, value_val
+        )),
+        LowType::List | LowType::MixedList => emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_LIST, value_val, "i8*"),
+        LowType::Map => emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_MAP, value_val, "i8*"),
+        LowType::Entity => emit_inline_slot_store(s, tmp, obj_val, slot_idx, OBO_VTAG_ENTITY, value_val, "i8*"),
+        LowType::Dyn => emit_inline_slot_store_boxed(s, tmp, obj_val, slot_idx, value_val),
+        _ => {
+            // Fall back to regular entity put
+            emit_object_store_call(s, tmp, "entity", obj_val, _key_ptr, value_op, value_val, value_ty)?;
+        }
+    }
+    Ok(())
+}
+
 fn emit_inst(
     s: &mut String,
     tmp: &mut u32,
@@ -636,6 +981,8 @@ fn emit_inst(
     fn_ret: &HashMap<String, LowType>,
     gc_root_count: i64,
     bridge_ret_overrides: &HashMap<String, String>,
+    entity_ptr_cache: &mut HashMap<String, String>,
+    reg_source_var: &mut HashMap<u32, String>,
 ) -> Result<(), String> {
     match inst {
         Inst::Const(r, c) => {
@@ -711,8 +1058,12 @@ fn emit_inst(
                 }
             }
 
-            // Coerce heap types to Str when doing Add/Concat with a text operand
+            // Coerce heap types to Str when doing Add/Concat with a text operand.
+            // Skip when both operands are Dyn — that case uses runtime arithmetic
+            // dispatch (obo_dyn_arith) to preserve numeric semantics.
+            let both_dyn_here = lt == LowType::Dyn && rt == LowType::Dyn;
             if matches!(op, BinOp::Add | BinOp::Concat)
+                && !both_dyn_here
                 && (lt == LowType::Str || rt == LowType::Str
                     || matches!(lt, LowType::List | LowType::MixedList | LowType::Map | LowType::Entity | LowType::Dyn)
                     || matches!(rt, LowType::List | LowType::MixedList | LowType::Map | LowType::Entity | LowType::Dyn))
@@ -751,15 +1102,44 @@ fn emit_inst(
             // Keep Dyn boxed for comparisons so runtime tag-aware comparison can
             // preserve string and numeric semantics. Arithmetic still unboxes.
             if !matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Less | BinOp::Greater | BinOp::LessEq | BinOp::GreaterEq) {
-                if lt == LowType::Dyn {
-                    lv = coerce_value(s, tmp, &lv, LowType::Dyn, LowType::I64)?;
-                    lt = LowType::I64;
-                }
-                if rt == LowType::Dyn {
-                    rv = coerce_value(s, tmp, &rv, LowType::Dyn, LowType::I64)?;
-                    rt = LowType::I64;
+                // When both operands are Dyn, dispatch arithmetic to runtime
+                // so float vs int semantics are preserved.
+                if lt == LowType::Dyn && rt == LowType::Dyn
+                    && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod)
+                {
+                    let opc: i32 = match op {
+                        BinOp::Add => 0,
+                        BinOp::Sub => 1,
+                        BinOp::Mul => 2,
+                        BinOp::Div => 3,
+                        BinOp::Mod => 4,
+                        _ => unreachable!(),
+                    };
+                    let out = fresh_tmp(tmp);
+                    s.push_str(&format!(
+                        "  {} = call i8* @obo_dyn_arith(i8* {}, i8* {}, i32 {})\n",
+                        out, lv, rv, opc
+                    ));
+                    store_reg_value(s, *r, &out, LowType::Dyn);
+                } else {
+                    if lt == LowType::Dyn {
+                        lv = coerce_value(s, tmp, &lv, LowType::Dyn, LowType::I64)?;
+                        lt = LowType::I64;
+                    }
+                    if rt == LowType::Dyn {
+                        rv = coerce_value(s, tmp, &rv, LowType::Dyn, LowType::I64)?;
+                        rt = LowType::I64;
+                    }
                 }
             }
+            // If we already handled the Dyn-Dyn arithmetic case, skip
+            // the normal code-gen path below.  Comparisons are NOT handled
+            // above and must fall through to the obo_value_compare path.
+            if lt == LowType::Dyn && rt == LowType::Dyn
+                && !matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Less | BinOp::Greater | BinOp::LessEq | BinOp::GreaterEq)
+            {
+                // Already emitted — handled above via obo_dyn_arith.
+            } else {
             let dst = format!("%reg_{}_ptr", r.0);
             let either_f64 = lt == LowType::F64 || rt == LowType::F64;
             use BinOp::*;
@@ -801,12 +1181,10 @@ fn emit_inst(
                     s.push_str(&format!("  store i8* {}, i8** {}\n", t, dst));
                 }
                 Add if lt == LowType::Str && (rt == LowType::I64 || rt == LowType::Bool) => {
-                    let rs = fresh_tmp(tmp);
-                    s.push_str(&format!("  {} = call i8* @obo_i64_to_str(i64 {})\n", rs, rv));
                     let t = fresh_tmp(tmp);
                     s.push_str(&format!(
-                        "  {} = call i8* @obo_str_concat(i8* {}, i8* {})\n",
-                        t, lv, rs
+                        "  {} = call i8* @obo_str_concat_int(i8* {}, i64 {})\n",
+                        t, lv, rv
                     ));
                     s.push_str(&format!("  store i8* {}, i8** {}\n", t, dst));
                 }
@@ -979,6 +1357,7 @@ fn emit_inst(
                     s.push_str(&format!("  store i64 {}, i64* {}\n", ext, dst));
                 }
             }
+            } // close else-block for Dyn-Dyn arithmetic bypass
         }
         Inst::UnaryOp(r, uop, op) => {
             let (mut v, mut ut) = emit_operand(s, tmp, op, reg_ty, var_ty, string_table)?;
@@ -1055,8 +1434,12 @@ fn emit_inst(
                     s.push_str(&format!("  store i8* {}, i8** {}\n", t, dst));
                 }
             }
+            // Track which variable this register was loaded from (for entity ptr caching)
+            reg_source_var.insert(r.0, name.clone());
         }
         Inst::Store(name, op) => {
+            // Variable reassignment invalidates any cached entity pointer
+            entity_ptr_cache.remove(name);
             let (val, ty) = emit_operand(s, tmp, op, reg_ty, var_ty, string_table)?;
             let ptr = format!("%var_{}_ptr", sanitize_name(name));
             match ty {
@@ -1105,6 +1488,7 @@ fn emit_inst(
                     let (arg_val, arg_ty) = emit_operand(s, tmp, arg, reg_ty, var_ty, string_table)?;
                     let expected = callee
                         .map(|func| param_low_type(func, index))
+                        .or_else(|| bfn.param_types.get(index).and_then(|ty| llvm_param_low_type(ty)))
                         .unwrap_or(arg_ty);
                     let coerced = coerce_value(s, tmp, &arg_val, arg_ty, expected)?;
                     call_args.push(format!("{} {}", expected.llvm(), coerced));
@@ -1157,6 +1541,7 @@ fn emit_inst(
                 let (arg_val, arg_ty) = emit_operand(s, tmp, arg, reg_ty, var_ty, string_table)?;
                 let expected = callee
                     .map(|func| param_low_type(func, index))
+                    .or_else(|| extern_param_low_type(name, index))
                     .unwrap_or(arg_ty);
                 let coerced = coerce_value(s, tmp, &arg_val, arg_ty, expected)?;
                 call_args.push(format!("{} {}", expected.llvm(), coerced));
@@ -1708,10 +2093,18 @@ fn emit_inst(
                         // treat as entity/dyn field access.
                         let key_ptr = interned_string_ptr(name, string_table)?;
                         let out = fresh_tmp(tmp);
-                        s.push_str(&format!(
-                            "  {} = call i8* @obo_entity_get_boxed(i8* {}, i8* {})\n",
-                            out, obj_val, key_ptr
-                        ));
+                        if let Some(slot_idx) = resolve_field_slot(ir, name) {
+                            let offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE;
+                            s.push_str(&format!(
+                                "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                                out, obj_val, offset
+                            ));
+                        } else {
+                            s.push_str(&format!(
+                                "  {} = call i8* @obo_entity_get_boxed(i8* {}, i8* {})\n",
+                                out, obj_val, key_ptr
+                            ));
+                        }
                         store_reg_value(s, *r, &out, LowType::Dyn);
                     }
                 }
@@ -1779,12 +2172,68 @@ fn emit_inst(
                 }
                 LowType::Entity => {
                     let key_ptr = interned_string_ptr(name, string_table)?;
-                    let out = fresh_tmp(tmp);
-                    s.push_str(&format!(
-                        "  {} = call i8* @obo_entity_get_boxed(i8* {}, i8* {})\n",
-                        out, obj_val, key_ptr
-                    ));
-                    store_reg_value(s, *r, &out, LowType::Dyn);
+                    let result_ty = reg_ty.get(r.0 as usize).and_then(|t| *t).unwrap_or(LowType::Dyn);
+                    if let Some(slot_idx) = resolve_field_slot(ir, name) {
+                        match result_ty {
+                            LowType::F64 => {
+                                // Load raw double from slot[idx].u.f64_val directly.
+                                let union_offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE + OBOVALUE_UNION_OFFSET;
+                                let raw_ptr = fresh_tmp(tmp);
+                                s.push_str(&format!(
+                                    "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                                    raw_ptr, obj_val, union_offset
+                                ));
+                                let dbl_ptr = fresh_tmp(tmp);
+                                s.push_str(&format!(
+                                    "  {} = bitcast i8* {} to double*\n",
+                                    dbl_ptr, raw_ptr
+                                ));
+                                let dbl_val = fresh_tmp(tmp);
+                                s.push_str(&format!(
+                                    "  {} = load double, double* {}\n",
+                                    dbl_val, dbl_ptr
+                                ));
+                                store_reg_value(s, *r, &dbl_val, LowType::F64);
+                            }
+                            LowType::I64 => {
+                                // Load raw i64 from slot[idx].u.i64_val directly.
+                                let union_offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE + OBOVALUE_UNION_OFFSET;
+                                let raw_ptr = fresh_tmp(tmp);
+                                s.push_str(&format!(
+                                    "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                                    raw_ptr, obj_val, union_offset
+                                ));
+                                let i64_ptr = fresh_tmp(tmp);
+                                s.push_str(&format!(
+                                    "  {} = bitcast i8* {} to i64*\n",
+                                    i64_ptr, raw_ptr
+                                ));
+                                let i64_val = fresh_tmp(tmp);
+                                s.push_str(&format!(
+                                    "  {} = load i64, i64* {}\n",
+                                    i64_val, i64_ptr
+                                ));
+                                store_reg_value(s, *r, &i64_val, LowType::I64);
+                            }
+                            _ => {
+                                // Return OboValue* pointer (boxed dynamic).
+                                let out = fresh_tmp(tmp);
+                                let offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE;
+                                s.push_str(&format!(
+                                    "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                                    out, obj_val, offset
+                                ));
+                                store_reg_value(s, *r, &out, LowType::Dyn);
+                            }
+                        }
+                    } else {
+                        let out = fresh_tmp(tmp);
+                        s.push_str(&format!(
+                            "  {} = call i8* @obo_entity_get_boxed(i8* {}, i8* {})\n",
+                            out, obj_val, key_ptr
+                        ));
+                        store_reg_value(s, *r, &out, LowType::Dyn);
+                    }
                 }
                 LowType::Dyn => {
                     if name == "count" || name == "length" {
@@ -1809,14 +2258,82 @@ fn emit_inst(
                         ));
                         store_reg_value(s, *r, &out, LowType::Dyn);
                     } else {
-                        let obj_ptr = coerce_value(s, tmp, &obj_val, obj_ty, LowType::Entity)?;
+                        // Use cached entity pointer if available (avoids redundant obo_value_as_entity_ptr calls)
+                        let obj_ptr = if let Operand::Reg(reg) = obj {
+                            if let Some(var_name) = reg_source_var.get(&reg.0) {
+                                if let Some(cached) = entity_ptr_cache.get(var_name) {
+                                    cached.clone()
+                                } else {
+                                    let ptr = coerce_value(s, tmp, &obj_val, obj_ty, LowType::Entity)?;
+                                    entity_ptr_cache.insert(var_name.clone(), ptr.clone());
+                                    ptr
+                                }
+                            } else {
+                                coerce_value(s, tmp, &obj_val, obj_ty, LowType::Entity)?
+                            }
+                        } else {
+                            coerce_value(s, tmp, &obj_val, obj_ty, LowType::Entity)?
+                        };
                         let key_ptr = interned_string_ptr(name, string_table)?;
-                        let out = fresh_tmp(tmp);
-                        s.push_str(&format!(
-                            "  {} = call i8* @obo_entity_get_boxed(i8* {}, i8* {})\n",
-                            out, obj_ptr, key_ptr
-                        ));
-                        store_reg_value(s, *r, &out, LowType::Dyn);
+                        let result_ty = reg_ty.get(r.0 as usize).and_then(|t| *t).unwrap_or(LowType::Dyn);
+                        if let Some(slot_idx) = resolve_field_slot(ir, name) {
+                            match result_ty {
+                                LowType::F64 => {
+                                    let union_offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE + OBOVALUE_UNION_OFFSET;
+                                    let raw_ptr = fresh_tmp(tmp);
+                                    s.push_str(&format!(
+                                        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                                        raw_ptr, obj_ptr, union_offset
+                                    ));
+                                    let dbl_ptr = fresh_tmp(tmp);
+                                    s.push_str(&format!(
+                                        "  {} = bitcast i8* {} to double*\n",
+                                        dbl_ptr, raw_ptr
+                                    ));
+                                    let dbl_val = fresh_tmp(tmp);
+                                    s.push_str(&format!(
+                                        "  {} = load double, double* {}\n",
+                                        dbl_val, dbl_ptr
+                                    ));
+                                    store_reg_value(s, *r, &dbl_val, LowType::F64);
+                                }
+                                LowType::I64 => {
+                                    let union_offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE + OBOVALUE_UNION_OFFSET;
+                                    let raw_ptr = fresh_tmp(tmp);
+                                    s.push_str(&format!(
+                                        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                                        raw_ptr, obj_ptr, union_offset
+                                    ));
+                                    let i64_ptr = fresh_tmp(tmp);
+                                    s.push_str(&format!(
+                                        "  {} = bitcast i8* {} to i64*\n",
+                                        i64_ptr, raw_ptr
+                                    ));
+                                    let i64_val = fresh_tmp(tmp);
+                                    s.push_str(&format!(
+                                        "  {} = load i64, i64* {}\n",
+                                        i64_val, i64_ptr
+                                    ));
+                                    store_reg_value(s, *r, &i64_val, LowType::I64);
+                                }
+                                _ => {
+                                    let out = fresh_tmp(tmp);
+                                    let offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE;
+                                    s.push_str(&format!(
+                                        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                                        out, obj_ptr, offset
+                                    ));
+                                    store_reg_value(s, *r, &out, LowType::Dyn);
+                                }
+                            }
+                        } else {
+                            let out = fresh_tmp(tmp);
+                            s.push_str(&format!(
+                                "  {} = call i8* @obo_entity_get_boxed(i8* {}, i8* {})\n",
+                                out, obj_ptr, key_ptr
+                            ));
+                            store_reg_value(s, *r, &out, LowType::Dyn);
+                        }
                     }
                 }
                 _ => {
@@ -1824,10 +2341,18 @@ fn emit_inst(
                         let obj_ptr = coerce_value(s, tmp, &obj_val, obj_ty, LowType::Entity)?;
                         let key_ptr = interned_string_ptr(name, string_table)?;
                         let out = fresh_tmp(tmp);
-                        s.push_str(&format!(
-                            "  {} = call i8* @obo_entity_get_boxed(i8* {}, i8* {})\n",
-                            out, obj_ptr, key_ptr
-                        ));
+                        if let Some(slot_idx) = resolve_field_slot(ir, name) {
+                            let offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE;
+                            s.push_str(&format!(
+                                "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                                out, obj_ptr, offset
+                            ));
+                        } else {
+                            s.push_str(&format!(
+                                "  {} = call i8* @obo_entity_get_boxed(i8* {}, i8* {})\n",
+                                out, obj_ptr, key_ptr
+                            ));
+                        }
                         store_reg_value(s, *r, &out, LowType::Dyn);
                     } else if name == "value" || name == "load" {
                         let obj_ptr = coerce_value(s, tmp, &obj_val, obj_ty, LowType::Dyn)?;
@@ -1858,10 +2383,18 @@ fn emit_inst(
                         let obj_ptr = coerce_value(s, tmp, &obj_val, obj_ty, LowType::Dyn)?;
                         let key_ptr = interned_string_ptr(name, string_table)?;
                         let out = fresh_tmp(tmp);
-                        s.push_str(&format!(
-                            "  {} = call i8* @obo_entity_get_boxed(i8* {}, i8* {})\n",
-                            out, obj_ptr, key_ptr
-                        ));
+                        if let Some(slot_idx) = resolve_field_slot(ir, name) {
+                            let offset = SLOTTED_SLOTS_OFFSET + slot_idx as i64 * OBOVALUE_SIZE;
+                            s.push_str(&format!(
+                                "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                                out, obj_ptr, offset
+                            ));
+                        } else {
+                            s.push_str(&format!(
+                                "  {} = call i8* @obo_entity_get_boxed(i8* {}, i8* {})\n",
+                                out, obj_ptr, key_ptr
+                            ));
+                        }
                         store_reg_value(s, *r, &out, LowType::Dyn);
                     }
                 }
@@ -1872,39 +2405,55 @@ fn emit_inst(
             let (value_val, value_ty) = emit_operand(s, tmp, value, reg_ty, var_ty, string_table)?;
             let key_ptr = interned_string_ptr(name, string_table)?;
             match obj_ty {
-                LowType::Entity => emit_object_store_call(
-                    s,
-                    tmp,
-                    "entity",
-                    &obj_val,
-                    &key_ptr,
-                    value,
-                    &value_val,
-                    value_ty,
-                )?,
+                LowType::Entity => {
+                    if let Some(slot_idx) = resolve_field_slot(ir, name) {
+                        emit_entity_sfs_call(
+                            s, tmp, &obj_val, slot_idx, &key_ptr,
+                            value, &value_val, value_ty,
+                        )?;
+                    } else {
+                        emit_object_store_call(
+                            s, tmp, "entity", &obj_val, &key_ptr,
+                            value, &value_val, value_ty,
+                        )?;
+                    }
+                }
                 LowType::Map => emit_object_store_call(
-                    s,
-                    tmp,
-                    "map",
-                    &obj_val,
-                    &key_ptr,
-                    value,
-                    &value_val,
-                    value_ty,
+                    s, tmp, "map", &obj_val, &key_ptr,
+                    value, &value_val, value_ty,
                 )?,
                 LowType::Dyn | LowType::I64 | LowType::Bool => {
-                    // Fallback: coerce to Entity and treat as entity field set
-                    let obj_ptr = coerce_value(s, tmp, &obj_val, obj_ty, LowType::Entity)?;
-                    emit_object_store_call(
-                        s,
-                        tmp,
-                        "entity",
-                        &obj_ptr,
-                        &key_ptr,
-                        value,
-                        &value_val,
-                        value_ty,
-                    )?;
+                    // Use cached entity pointer if available
+                    let obj_ptr = if obj_ty == LowType::Dyn {
+                        if let Operand::Reg(reg) = obj {
+                            if let Some(var_name) = reg_source_var.get(&reg.0) {
+                                if let Some(cached) = entity_ptr_cache.get(var_name) {
+                                    cached.clone()
+                                } else {
+                                    let ptr = coerce_value(s, tmp, &obj_val, obj_ty, LowType::Entity)?;
+                                    entity_ptr_cache.insert(var_name.clone(), ptr.clone());
+                                    ptr
+                                }
+                            } else {
+                                coerce_value(s, tmp, &obj_val, obj_ty, LowType::Entity)?
+                            }
+                        } else {
+                            coerce_value(s, tmp, &obj_val, obj_ty, LowType::Entity)?
+                        }
+                    } else {
+                        coerce_value(s, tmp, &obj_val, obj_ty, LowType::Entity)?
+                    };
+                    if let Some(slot_idx) = resolve_field_slot(ir, name) {
+                        emit_entity_sfs_call(
+                            s, tmp, &obj_ptr, slot_idx, &key_ptr,
+                            value, &value_val, value_ty,
+                        )?;
+                    } else {
+                        emit_object_store_call(
+                            s, tmp, "entity", &obj_ptr, &key_ptr,
+                            value, &value_val, value_ty,
+                        )?;
+                    }
                 }
                 _ => return Err("native build: set_field is only supported on maps and entities".into()),
             }
@@ -2113,23 +2662,49 @@ fn emit_inst(
         Inst::MakeEntity(r, type_name, fields) => {
             let type_ptr = interned_string_ptr(type_name, string_table)?;
             let entity = fresh_tmp(tmp);
-            s.push_str(&format!(
-                "  {} = call i8* @obo_entity_new(i8* {})\n",
-                entity, type_ptr
-            ));
-            for (field_name, value) in fields {
-                let key_ptr = interned_string_ptr(field_name, string_table)?;
-                let (field_val, field_ty) = emit_operand(s, tmp, value, reg_ty, var_ty, string_table)?;
-                emit_object_store_call(
-                    s,
-                    tmp,
-                    "entity",
-                    &entity,
-                    &key_ptr,
-                    value,
-                    &field_val,
-                    field_ty,
-                )?;
+            if let Some(layout) = ir.entity_layouts.get(type_name.as_str()) {
+                let nslots = layout.len() as i32;
+                s.push_str(&format!(
+                    "  {} = call i8* @obo_entity_new_slotted(i8* {}, i32 {})\n",
+                    entity, type_ptr, nslots
+                ));
+                // Set field names for printing/reflection
+                for (idx, fname) in layout.iter().enumerate() {
+                    let name_ptr = interned_string_ptr(fname, string_table)?;
+                    s.push_str(&format!(
+                        "  call void @obo_entity_set_field_name(i8* {}, i32 {}, i8* {})\n",
+                        entity, idx, name_ptr
+                    ));
+                }
+                for (field_name, value) in fields {
+                    let (field_val, field_ty) = emit_operand(s, tmp, value, reg_ty, var_ty, string_table)?;
+                    if let Some(idx) = layout.iter().position(|f| f == field_name) {
+                        emit_entity_slot_set_call(
+                            s, tmp, &entity, idx as i32,
+                            value, &field_val, field_ty,
+                        )?;
+                    } else {
+                        // Unknown field in layout — fall back for safety
+                        let key_ptr = interned_string_ptr(field_name, string_table)?;
+                        emit_object_store_call(
+                            s, tmp, "entity", &entity, &key_ptr,
+                            value, &field_val, field_ty,
+                        )?;
+                    }
+                }
+            } else {
+                s.push_str(&format!(
+                    "  {} = call i8* @obo_entity_new(i8* {})\n",
+                    entity, type_ptr
+                ));
+                for (field_name, value) in fields {
+                    let key_ptr = interned_string_ptr(field_name, string_table)?;
+                    let (field_val, field_ty) = emit_operand(s, tmp, value, reg_ty, var_ty, string_table)?;
+                    emit_object_store_call(
+                        s, tmp, "entity", &entity, &key_ptr,
+                        value, &field_val, field_ty,
+                    )?;
+                }
             }
             store_reg_value(s, *r, &entity, LowType::Entity);
         }
@@ -2646,7 +3221,6 @@ fn box_value(s: &mut String, tmp: &mut u32, value: &str, ty: LowType) -> Result<
             s.push_str(&format!("  {} = call i8* @obo_box_entity(i8* {})\n", out, value))
         }
         LowType::Dyn | LowType::Closure | LowType::Task => return Ok(value.to_string()),
-        _ => return Err("native build: unsupported value in mixed list literal".into()),
     }
     Ok(out)
 }

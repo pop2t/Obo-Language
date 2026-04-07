@@ -1,0 +1,22 @@
+entity Pt { x; y; }
+
+function test(pts)
+{
+    a = pts[0];
+    b = pts[1];
+    show "a.x=" + a.x + " a.y=" + a.y;
+    show "b.x=" + b.x + " b.y=" + b.y;
+    show "diff=" + (a.x - b.x);
+}
+
+function main()
+{
+    p1 = Pt { x = 10.5; y = 20.5; };
+    p2 = Pt { x = 3.0; y = 4.0; };
+    show "p1.x=" + p1.x;
+    show "p2.x=" + p2.x;
+    pts = [p1, p2];
+    test(pts);
+}
+
+main();

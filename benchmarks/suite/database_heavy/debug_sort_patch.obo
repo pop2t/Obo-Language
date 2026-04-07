@@ -1,0 +1,57 @@
+entity Row
+{
+    id;
+    data;
+}
+
+function sort_rows(rows, column, ascending)
+{
+    result = [];
+    remaining = rows;
+    while (remaining.count > 0)
+    {
+        best = 0;
+        count (i = 1, remaining.count)
+        {
+            a = remaining[i].data[column];
+            b = remaining[best].data[column];
+            if (ascending)
+            {
+                if (a < b) { best = i; }
+            }
+            else
+            {
+                if (b < a) { best = i; }
+            }
+        }
+        result = result.add(remaining[best]);
+        remaining = remaining.removeAt(best);
+    }
+    out result;
+}
+
+function max_of(rows, column)
+{
+    best = rows[0].data[column];
+    for (row in rows)
+    {
+        v = row.data[column];
+        if (best < v) { best = v; }
+    }
+    out best;
+}
+
+function main()
+{
+    rows = [];
+    rows = rows.add(Row { id = 1; data = ["salary": 10]; });
+    rows = rows.add(Row { id = 2; data = ["salary": 20]; });
+    rows = rows.add(Row { id = 3; data = ["salary": 30]; });
+    sorted = sort_rows(rows, "salary", true);
+    show "sorted_count=" + sorted.count;
+    show "first=" + sorted[0].data["salary"];
+    show "last=" + sorted[sorted.count - 1].data["salary"];
+    show "max=" + max_of(rows, "salary");
+}
+
+main();

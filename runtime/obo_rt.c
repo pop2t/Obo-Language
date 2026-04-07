@@ -13,6 +13,17 @@ void obo_list_print(void* p);
 void obo_map_print(void* mp);
 void obo_entity_print(void* ep);
 
+/* Forward declarations for entity put functions (used by hybrid sfs functions) */
+void obo_entity_put_i64(void* ep, const char* field, int64_t v);
+void obo_entity_put_f64(void* ep, const char* field, double v);
+void obo_entity_put_str(void* ep, const char* field, const char* s);
+void obo_entity_put_bool(void* ep, const char* field, int64_t v);
+void obo_entity_put_null(void* ep, const char* field);
+void obo_entity_put_list(void* ep, const char* field, void* list);
+void obo_entity_put_map(void* ep, const char* field, void* map);
+void obo_entity_put_entity(void* ep, const char* field, void* ent);
+void obo_entity_put_boxed(void* ep, const char* field, void* boxed);
+
 void obo_arena_register(void* ptr);
 /* GC kinds — set at allocation sites for transitive marking */
 #define OBO_GC_STRING 0
@@ -24,10 +35,110 @@ void obo_arena_register(void* ptr);
 #define OBO_GC_VALUE 6
 #define OBO_GC_TASK 7
 #define OBO_GC_OPAQUE 8
-typedef struct GCNode GCNode;
+#define OBO_GC_ENTITY_SLOTTED 9
+/* GC node definition (moved early so list/map realloc can update GC pointers) */
+typedef struct GCNode {
+    void* ptr;
+    uint8_t mark;
+    uint8_t kind;
+    struct GCNode* next;      /* global sweep list */
+    struct GCNode* ht_next;   /* hash-table chain  */
+} GCNode;
+static GCNode* __obo_gc_head = NULL;
+static int64_t __obo_gc_alloc_count = 0;
+static int64_t __obo_gc_threshold = 256;
+static int __obo_gc_paused = 0;
+
+/* ── GCNode pool: avoid per-node malloc ── */
+#define GC_NODE_CHUNK 4096
+typedef struct GCNodeChunk {
+    struct GCNodeChunk* next;
+    GCNode nodes[GC_NODE_CHUNK];
+} GCNodeChunk;
+static GCNodeChunk* __gc_chunks = NULL;
+static int           __gc_chunk_idx = GC_NODE_CHUNK; /* force first alloc */
+static GCNode*       __gc_free_list = NULL;
+
+static GCNode* gc_node_alloc(void) {
+    if (__gc_free_list) {
+        GCNode* n = __gc_free_list;
+        __gc_free_list = n->next;
+        return n;
+    }
+    if (__gc_chunk_idx >= GC_NODE_CHUNK) {
+        GCNodeChunk* c = (GCNodeChunk*)malloc(sizeof(GCNodeChunk));
+        if (!c) return (GCNode*)malloc(sizeof(GCNode)); /* fallback */
+        c->next = __gc_chunks;
+        __gc_chunks = c;
+        __gc_chunk_idx = 0;
+    }
+    return &__gc_chunks->nodes[__gc_chunk_idx++];
+}
+
+static void gc_node_free(GCNode* n) {
+    n->next = __gc_free_list;
+    __gc_free_list = n;
+}
+
+#define GC_HT_BITS 14
+#define GC_HT_SIZE (1 << GC_HT_BITS)
+static GCNode* __obo_gc_ht[GC_HT_SIZE];
+
+static inline uint32_t gc_ptr_hash(void* ptr) {
+    uintptr_t x = (uintptr_t)ptr;
+    x = ((x >> 4) ^ (x >> 18)) & (GC_HT_SIZE - 1);
+    return (uint32_t)x;
+}
+
+static void gc_ht_remove(GCNode* node) {
+    uint32_t h = gc_ptr_hash(node->ptr);
+    GCNode** pp = &__obo_gc_ht[h];
+    while (*pp) {
+        if (*pp == node) { *pp = node->ht_next; return; }
+        pp = &(*pp)->ht_next;
+    }
+}
+
 static void obo_gc_register_impl(void* ptr, int kind);
 static char* obo_gc_track_string(char* s);
-static GCNode* gc_find_node(void* ptr);
+
+static GCNode* gc_find_node(void* ptr) {
+    uint32_t h = gc_ptr_hash(ptr);
+    for (GCNode* n = __obo_gc_ht[h]; n; n = n->ht_next) {
+        if (n->ptr == ptr) return n;
+    }
+    return NULL;
+}
+
+/* --- String interning (small fixed table for hot field names) --- */
+#define INTERN_HT_BITS 10
+#define INTERN_HT_SIZE (1 << INTERN_HT_BITS)
+typedef struct InternEntry {
+    char* str;
+    struct InternEntry* next;
+} InternEntry;
+static InternEntry* __intern_ht[INTERN_HT_SIZE];
+
+static uint32_t intern_hash(const char* s) {
+    uint32_t h = 5381;
+    while (*s) h = ((h << 5) + h) + (unsigned char)*s++;
+    return h & (INTERN_HT_SIZE - 1);
+}
+
+/* Return the canonical interned pointer for this string.
+   If not yet interned, copies and stores it. Interned strings are never freed. */
+static const char* obo_intern(const char* s) {
+    if (!s) return NULL;
+    uint32_t h = intern_hash(s);
+    for (InternEntry* e = __intern_ht[h]; e; e = e->next) {
+        if (e->str == s || strcmp(e->str, s) == 0) return e->str;
+    }
+    InternEntry* e = (InternEntry*)malloc(sizeof(InternEntry));
+    e->str = strdup(s);
+    e->next = __intern_ht[h];
+    __intern_ht[h] = e;
+    return e->str;
+}
 
 char* obo_str_concat(const char* a, const char* b) {
     size_t la = strlen(a);
@@ -38,6 +149,21 @@ char* obo_str_concat(const char* a, const char* b) {
     }
     memcpy(out, a, la);
     memcpy(out + la, b, lb + 1);
+    obo_gc_register_impl(out, OBO_GC_STRING);
+    return out;
+}
+
+/* Fused "prefix" + int → single allocation (avoids intermediate i64_to_str) */
+char* obo_str_concat_int(const char* prefix, int64_t n) {
+    char buf[96];
+    size_t plen = prefix ? strlen(prefix) : 0;
+    if (plen + 21 > sizeof(buf)) plen = sizeof(buf) - 21; /* safety cap */
+    if (plen) memcpy(buf, prefix, plen);
+    int nlen = snprintf(buf + plen, sizeof(buf) - plen, "%lld", (long long)n);
+    size_t total = plen + (size_t)nlen;
+    char* out = (char*)malloc(total + 1);
+    if (!out) return NULL;
+    memcpy(out, buf, total + 1);
     obo_gc_register_impl(out, OBO_GC_STRING);
     return out;
 }
@@ -156,6 +282,9 @@ typedef struct OboValue {
     } u;
 } OboValue;
 
+/* Static zero value for default / not-found returns (no allocation) */
+static OboValue __obo_zero_boxed = {OBO_V_I64, {.i64 = 0}};
+
 typedef struct OboTask {
     void* closure;
     pthread_t thread;
@@ -176,12 +305,20 @@ static char* obo_gc_track_string(char* s) {
     obo_gc_register_impl(s, OBO_GC_STRING);
     return s;
 }
+/* Circular arena for short-lived boxed values — no malloc, no GC tracking. */
+#define VALUE_ARENA_SIZE 4096
+static OboValue __value_arena[VALUE_ARENA_SIZE];
+static int __value_arena_idx = 0;
+
 static OboValue* obo_alloc_value(void) {
-    OboValue* v = (OboValue*)malloc(sizeof(OboValue));
-    if (!v) {
-        return NULL;
+    OboValue* v = &__value_arena[__value_arena_idx & (VALUE_ARENA_SIZE - 1)];
+    __value_arena_idx++;
+    /* Free old string if slot was reused */
+    if (v->tag == OBO_V_STR && v->u.str) {
+        free(v->u.str);
     }
-    obo_gc_register_impl(v, OBO_GC_VALUE);
+    v->tag = OBO_V_NULL;
+    v->u.i64 = 0;
     return v;
 }
 
@@ -200,6 +337,10 @@ static OboValue* obo_value_clone(const OboValue* v) {
 void obo_value_free(void* p) {
     OboValue* v = (OboValue*)p;
     if (!v) {
+        return;
+    }
+    /* Arena-allocated values: don't free, they're reused */
+    if (v >= __value_arena && v < __value_arena + VALUE_ARENA_SIZE) {
         return;
     }
     if (v->tag == OBO_V_STR && v->u.str) {
@@ -365,6 +506,40 @@ double obo_value_as_f64(void* p) {
     return 0.0;
 }
 
+/* Runtime arithmetic on boxed values — preserves float vs int semantics.
+   op: 0=Add, 1=Sub, 2=Mul, 3=Div, 4=Mod */
+void* obo_dyn_arith(void* a, void* b, int op) {
+    OboValue* va = (OboValue*)a;
+    OboValue* vb = (OboValue*)b;
+    if (!va || !vb) return obo_box_i64(0);
+    if (va->tag == OBO_V_F64 || vb->tag == OBO_V_F64) {
+        double fa = obo_value_as_f64(a);
+        double fb = obo_value_as_f64(b);
+        double r;
+        switch (op) {
+            case 0: r = fa + fb; break;
+            case 1: r = fa - fb; break;
+            case 2: r = fa * fb; break;
+            case 3: r = fb != 0.0 ? fa / fb : 0.0; break;
+            case 4: r = fb != 0.0 ? fmod(fa, fb) : 0.0; break;
+            default: r = 0.0; break;
+        }
+        return obo_box_f64(r);
+    }
+    int64_t ia = va->u.i64;
+    int64_t ib = vb->u.i64;
+    int64_t r;
+    switch (op) {
+        case 0: r = ia + ib; break;
+        case 1: r = ia - ib; break;
+        case 2: r = ia * ib; break;
+        case 3: r = ib != 0 ? ia / ib : 0; break;
+        case 4: r = ib != 0 ? ia % ib : 0; break;
+        default: r = 0; break;
+    }
+    return obo_box_i64(r);
+}
+
 const char* obo_value_as_str(void* p) {
     OboValue* v = (OboValue*)p;
     if (!v || v->tag != OBO_V_STR) return "";
@@ -402,12 +577,8 @@ void obo_mixed_list_set(void* lp, int64_t idx, void* val_ptr) {
 
 void* obo_mixed_list_get(void* lp, int64_t idx) {
     OboMixedList* l = (OboMixedList*)lp;
-    if (!l || idx < 0 || idx >= l->len) return NULL;
-    OboValue* v = obo_alloc_value();
-    if (!v) return NULL;
-    *v = l->items[idx];
-    if (v->tag == OBO_V_STR && v->u.str) v->u.str = strdup(v->u.str);
-    return v;
+    if (!l || idx < 0 || idx >= l->len) return &__obo_zero_boxed;
+    return &l->items[idx];  /* direct pointer — no clone, no alloc */
 }
 
 int64_t obo_mixed_list_len(void* lp) {
@@ -504,19 +675,29 @@ void* obo_mixed_list_add(void* lp, void* val_ptr) {
     OboMixedList* list = (OboMixedList*)lp;
     int64_t old_len = list ? list->len : 0;
     int64_t new_len = old_len + 1;
-    int64_t new_cap = new_len < 8 ? 8 : new_len * 2;
-    OboMixedList* result = (OboMixedList*)malloc(sizeof(OboMixedList) + (size_t)new_cap * sizeof(OboValue));
-    if (!result) return lp;
-    result->len = new_len;
-    result->cap = new_cap;
-    if (list && old_len > 0) {
-        memcpy(result->items, list->items, (size_t)old_len * sizeof(OboValue));
-        for (int64_t i = 0; i < old_len; i++) {
-            if (result->items[i].tag == OBO_V_STR && result->items[i].u.str) {
-                result->items[i].u.str = strdup(result->items[i].u.str);
+
+    OboMixedList* result;
+    if (list && new_len <= list->cap) {
+        /* Fast path: spare capacity, append in-place (no alloc, same pointer) */
+        result = list;
+    } else {
+        /* Grow: allocate new list with 2× capacity, copy old items */
+        int64_t new_cap = new_len < 8 ? 8 : new_len * 2;
+        result = (OboMixedList*)malloc(sizeof(OboMixedList) + (size_t)new_cap * sizeof(OboValue));
+        if (!result) return lp;
+        result->cap = new_cap;
+        if (list && old_len > 0) {
+            memcpy(result->items, list->items, (size_t)old_len * sizeof(OboValue));
+            /* Deep-copy strings so old and new lists are independent */
+            for (int64_t i = 0; i < old_len; i++) {
+                if (result->items[i].tag == OBO_V_STR && result->items[i].u.str)
+                    result->items[i].u.str = strdup(result->items[i].u.str);
             }
         }
+        memset(result->items + old_len, 0, (size_t)(new_cap - old_len) * sizeof(OboValue));
+        obo_gc_register_impl(result, OBO_GC_MIXED_LIST);
     }
+
     OboValue* boxed = (OboValue*)val_ptr;
     if (boxed) {
         result->items[old_len] = *boxed;
@@ -527,8 +708,7 @@ void* obo_mixed_list_add(void* lp, void* val_ptr) {
         result->items[old_len].tag = OBO_V_NULL;
         result->items[old_len].u.i64 = 0;
     }
-    memset(result->items + new_len, 0, (size_t)(new_cap - new_len) * sizeof(OboValue));
-    obo_gc_register_impl(result, OBO_GC_MIXED_LIST);
+    result->len = new_len;
     return result;
 }
 
@@ -702,7 +882,7 @@ void obo_list_print(void* p) {
     obo_print_owned_line(obo_format_list_string(p));
 }
 
-/* --- Map: open hash / linear probing simplified: linked bucket list --- */
+/* --- Map: open hash with dynamic resizing --- */
 typedef struct MapEntry {
     char* key;
     OboValue val;
@@ -711,28 +891,48 @@ typedef struct MapEntry {
     struct MapEntry* order_prev;
 } MapEntry;
 
+#define MAP_INIT_BUCKETS 16
+#define MAP_LOAD_FACTOR_NUM 3   /* resize when count*4 > nbuckets*3 (75%) */
+#define MAP_LOAD_FACTOR_DEN 4
+
 typedef struct {
-    MapEntry* buckets[64];
+    MapEntry** buckets;
+    uint32_t nbuckets;
     int64_t count;
     MapEntry* order_head;  /* first inserted */
     MapEntry* order_tail;  /* last inserted */
 } OboMap;
 
-static uint32_t map_hash(const char* k) {
+static uint32_t map_hash_raw(const char* k) {
     uint32_t h = 5381;
     while (*k) {
         h = ((h << 5) + h) + (unsigned char)*k++;
     }
-    return h % 64;
+    return h;
 }
 
+static inline uint32_t map_bucket(const OboMap* m, const char* k) {
+    return map_hash_raw(k) & (m->nbuckets - 1);
+}
+
+/* Legacy helper used by external callers that just need a bucket index for the old 64-bucket layout.
+   Now delegates through the map struct when available. Kept for obo_map_has / obo_type_check. */
+static uint32_t map_hash(const char* k) {
+    /* Fallback: should only be called from code that also has the OboMap* available.
+       We provide a 64-bucket compatible hash for backward compat in rare paths. */
+    return map_hash_raw(k) & 63;
+}
+
+static void map_resize(OboMap* m);
+
 static OboMap* obo_map_alloc_empty(void) {
-    OboMap* m = (OboMap*)calloc(1, sizeof(OboMap));
-    if (m) {
-        m->count = 0;
-        m->order_head = NULL;
-        m->order_tail = NULL;
-    }
+    OboMap* m = (OboMap*)malloc(sizeof(OboMap));
+    if (!m) return NULL;
+    m->nbuckets = MAP_INIT_BUCKETS;
+    m->buckets = (MapEntry**)calloc(m->nbuckets, sizeof(MapEntry*));
+    m->count = 0;
+    m->order_head = NULL;
+    m->order_tail = NULL;
     return m;
 }
 
@@ -750,10 +950,11 @@ int64_t obo_map_len(void* mp) {
 }
 
 static void map_insert(OboMap* m, const char* key, OboValue val) {
-    uint32_t i = map_hash(key);
+    const char* ikey = obo_intern(key);
+    uint32_t i = map_bucket(m, ikey);
     MapEntry* e = m->buckets[i];
     while (e) {
-        if (strcmp(e->key, key) == 0) {
+        if (e->key == ikey || strcmp(e->key, ikey) == 0) {
             if (e->val.tag == OBO_V_STR && e->val.u.str) {
                 free(e->val.u.str);
             }
@@ -763,7 +964,7 @@ static void map_insert(OboMap* m, const char* key, OboValue val) {
         e = e->next;
     }
     e = (MapEntry*)malloc(sizeof(MapEntry));
-    e->key = strdup(key);
+    e->key = (char*)ikey;  /* interned — no strdup needed */
     e->val = val;
     e->next = m->buckets[i];
     m->buckets[i] = e;
@@ -777,6 +978,25 @@ static void map_insert(OboMap* m, const char* key, OboValue val) {
     }
     m->order_tail = e;
     m->count += 1;
+    /* Resize if load factor exceeded */
+    if ((uint64_t)m->count * MAP_LOAD_FACTOR_DEN > (uint64_t)m->nbuckets * MAP_LOAD_FACTOR_NUM) {
+        map_resize(m);
+    }
+}
+
+static void map_resize(OboMap* m) {
+    uint32_t new_nb = m->nbuckets * 2;
+    MapEntry** new_buckets = (MapEntry**)calloc(new_nb, sizeof(MapEntry*));
+    if (!new_buckets) return;  /* OOM: keep old table */
+    /* Rehash all entries from the insertion-order list */
+    for (MapEntry* e = m->order_head; e; e = e->order_next) {
+        uint32_t h = map_hash_raw(e->key) & (new_nb - 1);
+        e->next = new_buckets[h];
+        new_buckets[h] = e;
+    }
+    free(m->buckets);
+    m->buckets = new_buckets;
+    m->nbuckets = new_nb;
 }
 
 void obo_map_put_i64(void* mp, const char* key, int64_t v) {
@@ -851,15 +1071,16 @@ void obo_map_put_boxed(void* mp, const char* key, void* boxed) {
 void* obo_map_get_boxed(void* mp, const char* key) {
     OboMap* m = (OboMap*)mp;
     if (!m || !key) {
-        return NULL;
+        return &__obo_zero_boxed;
     }
-    uint32_t i = map_hash(key);
+    const char* ikey = obo_intern(key);
+    uint32_t i = map_bucket(m, ikey);
     for (MapEntry* e = m->buckets[i]; e; e = e->next) {
-        if (strcmp(e->key, key) == 0) {
-            return obo_value_clone(&e->val);
+        if (e->key == ikey || strcmp(e->key, ikey) == 0) {
+            return &e->val;  /* direct pointer — no clone, no alloc */
         }
     }
-    return obo_box_i64(0);
+    return &__obo_zero_boxed;
 }
 
 void obo_map_print(void* mp) {
@@ -881,9 +1102,175 @@ void* obo_map_keys(void* mp) {
 
 /* --- Entity --- */
 typedef struct {
+    int32_t _slotted;   /* 0 = map-based entity */
     char* type_name;
     OboMap* fields;
 } OboEntity;
+
+/* --- Slotted Entity (compile-time known fields → flat OboValue array) --- */
+typedef struct {
+    int32_t _slotted;   /* 1 = slotted entity */
+    char*    type_name;
+    int32_t  nslots;
+    char**   field_names; /* optional: for printing/reflection */
+    OboValue slots[];   /* flexible array member */
+} OboEntitySlotted;
+
+void* obo_entity_new_slotted(const char* type_name, int32_t nslots) {
+    OboEntitySlotted* e = (OboEntitySlotted*)calloc(
+        1, sizeof(OboEntitySlotted) + (size_t)nslots * sizeof(OboValue));
+    if (!e) return NULL;
+    e->_slotted = 1;
+    e->type_name = (char*)type_name; /* borrowed — caller-owned (LLVM global) */
+    e->nslots = nslots;
+    e->field_names = NULL; /* allocated lazily on first set_field_name */
+    obo_gc_register_impl(e, OBO_GC_ENTITY_SLOTTED);
+    return e;
+}
+
+void obo_entity_set_field_name(void* ep, int32_t idx, const char* name) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    if (!e->field_names) {
+        e->field_names = (char**)calloc((size_t)e->nslots, sizeof(char*));
+        if (!e->field_names) return;
+    }
+    e->field_names[idx] = (char*)name; /* borrowed — caller-owned (LLVM global) */
+}
+
+/* GET: returns pointer to the OboValue slot (no hash, no intern, no search) */
+void* obo_entity_get_slot(void* ep, int32_t idx) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return &__obo_zero_boxed;
+    return &e->slots[idx];
+}
+
+/* SET variants: write directly into the slot */
+void obo_entity_set_slot_i64(void* ep, int32_t idx, int64_t v) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    e->slots[idx].tag = OBO_V_I64;
+    e->slots[idx].u.i64 = v;
+}
+void obo_entity_set_slot_f64(void* ep, int32_t idx, double v) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    e->slots[idx].tag = OBO_V_F64;
+    e->slots[idx].u.f64 = v;
+}
+void obo_entity_set_slot_str(void* ep, int32_t idx, const char* s) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    if (e->slots[idx].tag == OBO_V_STR && e->slots[idx].u.str)
+        free(e->slots[idx].u.str);
+    e->slots[idx].tag = OBO_V_STR;
+    e->slots[idx].u.str = s ? strdup(s) : NULL;
+}
+void obo_entity_set_slot_bool(void* ep, int32_t idx, int64_t v) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    e->slots[idx].tag = OBO_V_BOOL;
+    e->slots[idx].u.i64 = v;
+}
+void obo_entity_set_slot_null(void* ep, int32_t idx) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    e->slots[idx].tag = OBO_V_NULL;
+    e->slots[idx].u.i64 = 0;
+}
+void obo_entity_set_slot_list(void* ep, int32_t idx, void* list) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    e->slots[idx].tag = OBO_V_LIST;
+    e->slots[idx].u.ptr = list;
+}
+void obo_entity_set_slot_map(void* ep, int32_t idx, void* map) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    e->slots[idx].tag = OBO_V_MAP;
+    e->slots[idx].u.ptr = map;
+}
+void obo_entity_set_slot_entity(void* ep, int32_t idx, void* ent) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    e->slots[idx].tag = OBO_V_ENTITY;
+    e->slots[idx].u.ptr = ent;
+}
+void obo_entity_set_slot_boxed(void* ep, int32_t idx, void* boxed) {
+    OboEntitySlotted* e = (OboEntitySlotted*)ep;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    if (boxed) {
+        OboValue* bv = (OboValue*)boxed;
+        if (e->slots[idx].tag == OBO_V_STR && e->slots[idx].u.str)
+            free(e->slots[idx].u.str);
+        e->slots[idx] = *bv;
+        if (e->slots[idx].tag == OBO_V_STR && e->slots[idx].u.str)
+            e->slots[idx].u.str = strdup(e->slots[idx].u.str);
+    } else {
+        e->slots[idx].tag = OBO_V_NULL;
+        e->slots[idx].u.i64 = 0;
+    }
+}
+
+/* --- Hybrid entity field access: slot for slotted, map for regular --- */
+/* GET: single int32 check + array index for slotted, map lookup for regular */
+void* obo_entity_gfs(void* ep, int32_t slot_idx, const char* field) {
+    if (!ep) return &__obo_zero_boxed;
+    if (*(int32_t*)ep) {
+        OboEntitySlotted* e = (OboEntitySlotted*)ep;
+        if (slot_idx >= 0 && slot_idx < e->nslots) return &e->slots[slot_idx];
+        return &__obo_zero_boxed;
+    }
+    OboEntity* e = (OboEntity*)ep;
+    return obo_map_get_boxed(e->fields, field);
+}
+
+/* SET variants: dispatch to slot or map based on _slotted flag */
+void obo_entity_sfs_i64(void* ep, int32_t idx, const char* field, int64_t v) {
+    if (!ep) return;
+    if (*(int32_t*)ep) { obo_entity_set_slot_i64(ep, idx, v); return; }
+    obo_entity_put_i64(ep, field, v);
+}
+void obo_entity_sfs_f64(void* ep, int32_t idx, const char* field, double v) {
+    if (!ep) return;
+    if (*(int32_t*)ep) { obo_entity_set_slot_f64(ep, idx, v); return; }
+    obo_entity_put_f64(ep, field, v);
+}
+void obo_entity_sfs_str(void* ep, int32_t idx, const char* field, const char* sv) {
+    if (!ep) return;
+    if (*(int32_t*)ep) { obo_entity_set_slot_str(ep, idx, sv); return; }
+    obo_entity_put_str(ep, field, sv);
+}
+void obo_entity_sfs_bool(void* ep, int32_t idx, const char* field, int64_t v) {
+    if (!ep) return;
+    if (*(int32_t*)ep) { obo_entity_set_slot_bool(ep, idx, v); return; }
+    obo_entity_put_bool(ep, field, v);
+}
+void obo_entity_sfs_null(void* ep, int32_t idx, const char* field) {
+    if (!ep) return;
+    if (*(int32_t*)ep) { obo_entity_set_slot_null(ep, idx); return; }
+    obo_entity_put_null(ep, field);
+}
+void obo_entity_sfs_list(void* ep, int32_t idx, const char* field, void* lp) {
+    if (!ep) return;
+    if (*(int32_t*)ep) { obo_entity_set_slot_list(ep, idx, lp); return; }
+    obo_entity_put_list(ep, field, lp);
+}
+void obo_entity_sfs_map(void* ep, int32_t idx, const char* field, void* mp) {
+    if (!ep) return;
+    if (*(int32_t*)ep) { obo_entity_set_slot_map(ep, idx, mp); return; }
+    obo_entity_put_map(ep, field, mp);
+}
+void obo_entity_sfs_entity(void* ep, int32_t idx, const char* field, void* ent) {
+    if (!ep) return;
+    if (*(int32_t*)ep) { obo_entity_set_slot_entity(ep, idx, ent); return; }
+    obo_entity_put_entity(ep, field, ent);
+}
+void obo_entity_sfs_boxed(void* ep, int32_t idx, const char* field, void* boxed) {
+    if (!ep) return;
+    if (*(int32_t*)ep) { obo_entity_set_slot_boxed(ep, idx, boxed); return; }
+    obo_entity_put_boxed(ep, field, boxed);
+}
 
 void* obo_value_keys(void* p) {
     OboValue* v = (OboValue*)p;
@@ -892,8 +1279,11 @@ void* obo_value_keys(void* p) {
         return obo_box_list(obo_map_keys(v->u.ptr));
     }
     if (v->tag == OBO_V_ENTITY) {
-        OboEntity* e = (OboEntity*)v->u.ptr;
-        if (e && e->fields) return obo_box_list(obo_map_keys(e->fields));
+        void* ep = v->u.ptr;
+        if (ep && !*(int32_t*)ep) {
+            OboEntity* e = (OboEntity*)ep;
+            if (e->fields) return obo_box_list(obo_map_keys(e->fields));
+        }
     }
     return obo_box_list(obo_mixed_list_new(0));
 }
@@ -911,6 +1301,7 @@ void* obo_entity_new(const char* type_name) {
     if (!e) {
         return NULL;
     }
+    e->_slotted = 0;
     e->type_name = type_name ? strdup(type_name) : NULL;
     /* Field map is owned by the entity — not a separate GC object (avoids double-free). */
     e->fields = obo_map_alloc_empty();
@@ -993,7 +1384,7 @@ void obo_entity_put_boxed(void* ep, const char* field, void* boxed) {
 void* obo_entity_get_boxed(void* ep, const char* field) {
     OboEntity* e = (OboEntity*)ep;
     if (!e || !e->fields) {
-        return obo_box_i64(0);
+        return &__obo_zero_boxed;
     }
     return obo_map_get_boxed(e->fields, field);
 }
@@ -1446,10 +1837,23 @@ void* obo_list_add(void* p, int64_t val) {
     OboList* L = (OboList*)p;
     int64_t old_len = L ? L->len : 0;
     int64_t new_len = old_len + 1;
-    OboList* N = obo_alloc_list(new_len);
-    if (!N) return NULL;
-    if (L && old_len > 0) memcpy(N->items, L->items, (size_t)old_len * sizeof(int64_t));
+
+    OboList* N;
+    if (L && new_len <= L->cap) {
+        /* Fast path: spare capacity, append in-place */
+        N = L;
+    } else {
+        /* Grow: new allocation with 2× capacity */
+        int64_t new_cap = new_len < 8 ? 8 : new_len * 2;
+        N = obo_alloc_list(new_cap);
+        if (!N) return NULL;
+        if (L && old_len > 0) {
+            memcpy(N->items, L->items, (size_t)old_len * sizeof(int64_t));
+        }
+        N->cap = new_cap;
+    }
     N->items[old_len] = val;
+    N->len = new_len;
     return N;
 }
 
@@ -1740,9 +2144,10 @@ int64_t obo_map_empty(void* mp) { return obo_map_len(mp) == 0 ? 1 : 0; }
 int64_t obo_map_has(void* mp, const char* key) {
     OboMap* m = (OboMap*)mp;
     if (!m || !key) return 0;
-    uint32_t i = map_hash(key);
+    const char* ikey = obo_intern(key);
+    uint32_t i = map_bucket(m, ikey);
     for (MapEntry* e = m->buckets[i]; e; e = e->next)
-        if (strcmp(e->key, key) == 0) return 1;
+        if (e->key == ikey || strcmp(e->key, ikey) == 0) return 1;
     return 0;
 }
 
@@ -1755,10 +2160,11 @@ void* obo_map_set(void* mp, const char* key, int64_t val) {
 void* obo_map_remove(void* mp, const char* key) {
     OboMap* m = (OboMap*)mp;
     if (!m || !key) return mp;
-    uint32_t i = map_hash(key);
+    const char* ikey = obo_intern(key);
+    uint32_t i = map_bucket(m, ikey);
     MapEntry** pp = &m->buckets[i];
     while (*pp) {
-        if (strcmp((*pp)->key, key) == 0) {
+        if ((*pp)->key == ikey || strcmp((*pp)->key, ikey) == 0) {
             MapEntry* e = *pp;
             *pp = e->next;
             /* Unlink from insertion-order list */
@@ -1772,7 +2178,7 @@ void* obo_map_remove(void* mp, const char* key) {
             } else {
                 m->order_tail = e->order_prev;
             }
-            free(e->key);
+            /* key is interned — do NOT free */
             if (e->val.tag == OBO_V_STR && e->val.u.str) free(e->val.u.str);
             free(e);
             m->count--;
@@ -1785,15 +2191,20 @@ void* obo_map_remove(void* mp, const char* key) {
 
 /* --- Type checking (for check ... is Type) --- */
 int64_t obo_type_check(void* p, const char* type_name) {
-    if (!type_name) return 0;
+    if (!type_name || !p) return 0;
+    /* Slotted entities: only check type_name (no __variant support) */
+    GCNode* node = gc_find_node(p);
+    if (node && node->kind == OBO_GC_ENTITY_SLOTTED) {
+        OboEntitySlotted* es = (OboEntitySlotted*)p;
+        return (es->type_name && strcmp(es->type_name, type_name) == 0) ? 1 : 0;
+    }
     OboEntity* e = (OboEntity*)p;
-    if (!e) return 0;
     /* First check entity type_name (for entities and actors) */
     if (e->type_name && strcmp(e->type_name, type_name) == 0) return 1;
     /* Then check __variant field (for choice values) */
     if (e->fields) {
         OboMap* m = e->fields;
-        uint32_t i = map_hash("__variant");
+        uint32_t i = map_bucket(m, "__variant");
         for (MapEntry* ent = m->buckets[i]; ent; ent = ent->next) {
             if (strcmp(ent->key, "__variant") == 0) {
                 if (ent->val.tag == OBO_V_STR && ent->val.u.str && strcmp(ent->val.u.str, type_name) == 0) return 1;
@@ -1883,17 +2294,7 @@ void* obo_range(int64_t start, int64_t end, int64_t step) {
     return list;
 }
 
-/* --- Tracing GC (mark-and-sweep with transitive marking) --- */
-typedef struct GCNode {
-    void* ptr;
-    uint8_t mark;
-    uint8_t kind;
-    struct GCNode* next;
-} GCNode;
-static GCNode* __obo_gc_head = NULL;
-static int64_t __obo_gc_alloc_count = 0;
-static int64_t __obo_gc_threshold = 256;
-static int __obo_gc_paused = 0;
+/* --- GC continued: root stack, collection --- */
 
 /* Shadow stack for GC roots (pointers to stack slots holding heap refs) */
 #define OBO_GC_ROOT_STACK_SIZE 4096
@@ -1909,13 +2310,6 @@ void obo_gc_push_root(void** slot) {
 void obo_gc_pop_roots(int64_t n) {
     __obo_gc_root_top -= n;
     if (__obo_gc_root_top < 0) __obo_gc_root_top = 0;
-}
-
-static GCNode* gc_find_node(void* ptr) {
-    for (GCNode* n = __obo_gc_head; n; n = n->next) {
-        if (n->ptr == ptr) return n;
-    }
-    return NULL;
 }
 
 static int64_t obo_boxed_list_len(void* list_ptr) {
@@ -2196,6 +2590,24 @@ static int obo_format_map_into(OboStringBuf* buf, const OboMap* map, OboFormatSe
     return obo_buf_append_char(buf, ']');
 }
 
+static int obo_format_entity_slotted_into(OboStringBuf* buf, const OboEntitySlotted* es, OboFormatSeen* seen) {
+    if (!es) return obo_buf_append(buf, "null");
+    if (obo_seen_contains(seen, es)) return obo_buf_append(buf, "<cycle>");
+    if (!obo_seen_push(seen, es)
+        || !obo_buf_append(buf, es->type_name ? es->type_name : "?")
+        || !obo_buf_append(buf, " { ")) return 0;
+    for (int32_t i = 0; i < es->nslots; i++) {
+        if (i > 0 && !obo_buf_append(buf, "; ")) return 0;
+        if (es->field_names && es->field_names[i]) {
+            if (!obo_buf_append(buf, es->field_names[i])
+                || !obo_buf_append(buf, " = ")) return 0;
+        }
+        if (!obo_format_value_into(buf, &es->slots[i], seen)) return 0;
+    }
+    obo_seen_pop(seen);
+    return obo_buf_append(buf, " }");
+}
+
 static int obo_format_entity_into(OboStringBuf* buf, const OboEntity* entity, OboFormatSeen* seen) {
     if (!entity) {
         return obo_buf_append(buf, "null");
@@ -2209,7 +2621,7 @@ static int obo_format_entity_into(OboStringBuf* buf, const OboEntity* entity, Ob
         int data_count = 0;
         OboMap* m = entity->fields;
         /* find __variant */
-        uint32_t vi = map_hash("__variant");
+        uint32_t vi = map_bucket(m, "__variant");
         for (MapEntry* e = m->buckets[vi]; e; e = e->next) {
             if (strcmp(e->key, "__variant") == 0 && e->val.tag == OBO_V_STR) {
                 variant_name = e->val.u.str;
@@ -2275,8 +2687,12 @@ static int obo_format_value_into(OboStringBuf* buf, const OboValue* value, OboFo
             return obo_format_list_ptr_into(buf, value->u.ptr, seen);
         case OBO_V_MAP:
             return obo_format_map_into(buf, (const OboMap*)value->u.ptr, seen);
-        case OBO_V_ENTITY:
+        case OBO_V_ENTITY: {
+            GCNode* enode = gc_find_node(value->u.ptr);
+            if (enode && enode->kind == OBO_GC_ENTITY_SLOTTED)
+                return obo_format_entity_slotted_into(buf, (const OboEntitySlotted*)value->u.ptr, seen);
             return obo_format_entity_into(buf, (const OboEntity*)value->u.ptr, seen);
+        }
         case OBO_V_F64:
             return obo_buf_append_f64(buf, value->u.f64);
         case OBO_V_BOOL:
@@ -2375,12 +2791,19 @@ static void gc_mark_phase(void) {
     for (size_t i = 0; i < qlen; i++) {
         void* p = q[i];
         GCNode* n = gc_find_node(p);
-        if (!n || n->mark) continue;
-        n->mark = 1;
+        if (!n || n->mark == 2) continue;
+        n->mark = 2;
         switch (n->kind) {
             case OBO_GC_ENTITY: {
                 OboEntity* e = (OboEntity*)p;
                 gc_mark_map_edges(e->fields, &q, &qlen, &qcap);
+                break;
+            }
+            case OBO_GC_ENTITY_SLOTTED: {
+                OboEntitySlotted* e = (OboEntitySlotted*)p;
+                for (int32_t j = 0; j < e->nslots; j++) {
+                    gc_mark_obo_value_edges(&e->slots[j], &q, &qlen, &qcap);
+                }
                 break;
             }
             case OBO_GC_MAP:
@@ -2417,14 +2840,14 @@ static void obo_map_free_entries(OboMap* m) {
     MapEntry* e = m->order_head;
     while (e) {
         MapEntry* next = e->order_next;
-        free(e->key);
+        /* key is interned — do NOT free it */
         if (e->val.tag == OBO_V_STR && e->val.u.str) {
             free(e->val.u.str);
         }
         free(e);
         e = next;
     }
-    memset(m->buckets, 0, sizeof(m->buckets));
+    if (m->buckets) memset(m->buckets, 0, m->nbuckets * sizeof(MapEntry*));
     m->order_head = NULL;
     m->order_tail = NULL;
     m->count = 0;
@@ -2439,18 +2862,33 @@ static void gc_free_object(GCNode* node) {
         case OBO_GC_LIST_I64:
             free(p);
             break;
-        case OBO_GC_MAP:
-            obo_map_free_entries((OboMap*)p);
+        case OBO_GC_MAP: {
+            OboMap* map = (OboMap*)p;
+            obo_map_free_entries(map);
+            free(map->buckets);
             free(p);
             break;
+        }
         case OBO_GC_ENTITY: {
             OboEntity* e = (OboEntity*)p;
             if (e->type_name) free(e->type_name);
             if (e->fields) {
                 obo_map_free_entries(e->fields);
+                free(e->fields->buckets);
                 free(e->fields);
             }
             free(e);
+            break;
+        }
+        case OBO_GC_ENTITY_SLOTTED: {
+            OboEntitySlotted* es = (OboEntitySlotted*)p;
+            /* type_name and field_names entries are borrowed (LLVM globals) — don't free */
+            if (es->field_names) free(es->field_names);
+            for (int32_t i = 0; i < es->nslots; i++) {
+                if (es->slots[i].tag == OBO_V_STR && es->slots[i].u.str)
+                    free(es->slots[i].u.str);
+            }
+            free(es);
             break;
         }
         case OBO_GC_MIXED_LIST: {
@@ -2485,8 +2923,9 @@ void obo_gc_collect(void) {
         GCNode* node = *pp;
         if (!node->mark) {
             *pp = node->next;
+            gc_ht_remove(node);
             gc_free_object(node);
-            free(node);
+            gc_node_free(node);
             __obo_gc_alloc_count--;
         } else {
             node->mark = 0;
@@ -2500,13 +2939,18 @@ void obo_gc_resume(void) { __obo_gc_paused = 0; }
 
 static void obo_gc_register_impl(void* ptr, int kind) {
     if (!ptr) return;
-    GCNode* n = (GCNode*)malloc(sizeof(GCNode));
+    GCNode* n = gc_node_alloc();
     if (!n) return;
     n->ptr = ptr;
     n->mark = 1;
     n->kind = (uint8_t)kind;
+    /* Insert into sweep list */
     n->next = __obo_gc_head;
     __obo_gc_head = n;
+    /* Insert into hash table */
+    uint32_t h = gc_ptr_hash(ptr);
+    n->ht_next = __obo_gc_ht[h];
+    __obo_gc_ht[h] = n;
     __obo_gc_alloc_count++;
     if (!__obo_gc_paused && __obo_gc_alloc_count > __obo_gc_threshold) {
         obo_gc_collect();
@@ -2525,13 +2969,24 @@ void obo_arena_free_all(void) {
     while (n) {
         GCNode* next = n->next;
         gc_free_object(n);
-        free(n);
+        /* don't gc_node_free — we free entire chunks below */
         n = next;
     }
     __obo_gc_head = NULL;
     __obo_gc_alloc_count = 0;
     __obo_gc_root_top = 0;
     __obo_pending_tasks = NULL;
+    memset(__obo_gc_ht, 0, sizeof(__obo_gc_ht));
+    /* Free all GCNode chunk memory */
+    __gc_free_list = NULL;
+    GCNodeChunk* c = __gc_chunks;
+    while (c) {
+        GCNodeChunk* next = c->next;
+        free(c);
+        c = next;
+    }
+    __gc_chunks = NULL;
+    __gc_chunk_idx = GC_NODE_CHUNK;
 }
 
 /* --- Closures --- */
@@ -2606,7 +3061,7 @@ void* obo_event_listen(void* entity_ptr, const char* event_name, void* closure) 
 
     /* Look up existing listener list */
     OboMap* m = e->fields;
-    uint32_t h = map_hash(key);
+    uint32_t h = map_bucket(m, key);
     OboList* listeners = NULL;
     for (MapEntry* me = m->buckets[h]; me; me = me->next) {
         if (strcmp(me->key, key) == 0 && me->val.tag == OBO_V_LIST) {
@@ -2644,7 +3099,7 @@ void* obo_event_emit(void* entity_ptr, const char* event_name, void* args_list) 
     snprintf(key, sizeof(key), "__evt_%s", event_name);
 
     OboMap* m = e->fields;
-    uint32_t h = map_hash(key);
+    uint32_t h = map_bucket(m, key);
     OboList* listeners = NULL;
     for (MapEntry* me = m->buckets[h]; me; me = me->next) {
         if (strcmp(me->key, key) == 0 && me->val.tag == OBO_V_LIST) {

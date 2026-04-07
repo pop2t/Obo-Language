@@ -1,0 +1,287 @@
+/// OBO Benchmark: Database Heavy — 500 employees, 20 query iterations
+/// Tests: closures, higher-order functions, maps, lists, sorting, aggregation
+/// Real-world-ish mixed workload — closures + data structures + string ops
+
+entity Row
+{
+    id;
+    data;
+}
+
+function sort_rows(rows, column, ascending)
+{
+    result = [];
+    remaining = rows;
+    while (remaining.count > 0)
+    {
+        best = 0;
+        count (i = 1, remaining.count)
+        {
+            a = remaining[i].data[column];
+            b = remaining[best].data[column];
+            if (ascending)
+            {
+                if (a < b) { best = i; }
+            }
+            else
+            {
+                if (b < a) { best = i; }
+            }
+        }
+        result = result.add(remaining[best]);
+        remaining = remaining.removeAt(best);
+    }
+    out result;
+}
+
+function sum_of(rows, column)
+{
+    total = 0;
+    for (row in rows) { total = total + row.data[column]; }
+    out total;
+}
+
+function avg_of(rows, column)
+{
+    if (rows.count == 0) { out 0; }
+    out sum_of(rows, column) / rows.count;
+}
+
+function min_of(rows, column)
+{
+    if (rows.count == 0) { out null; }
+    best = rows[0].data[column];
+    for (row in rows)
+    {
+        v = row.data[column];
+        if (v < best) { best = v; }
+    }
+    out best;
+}
+
+function max_of(rows, column)
+{
+    if (rows.count == 0) { out null; }
+    best = rows[0].data[column];
+    for (row in rows)
+    {
+        v = row.data[column];
+        if (v > best) { best = v; }
+    }
+    out best;
+}
+
+function group_by(rows, column)
+{
+    groups = ["__init__": 0];
+    keys = [];
+    for (row in rows)
+    {
+        key = "" + row.data[column];
+        if (groups.has(key))
+        {
+            groups = groups.set(key, groups[key].add(row));
+        }
+        else
+        {
+            groups = groups.set(key, [row]);
+            keys = keys.add(key);
+        }
+    }
+    groups = groups.remove("__init__");
+    out groups, keys;
+}
+
+actor Table
+{
+    public name;
+    public columns;
+    public rows;
+    public next_id;
+
+    shared function create(tname, cols)
+    {
+        out Table { name = tname; columns = cols; rows = []; next_id = 1; };
+    }
+
+    function insert(record)
+    {
+        r = Row { id = next_id; data = record; };
+        rows = rows.add(r);
+        next_id = next_id + 1;
+        out r.id;
+    }
+
+    function where(pred)
+    {
+        current = rows;
+        filtered = current.filter(pred);
+        result_table = Table.create(name, columns);
+        result_table.rows = filtered;
+        out result_table;
+    }
+
+    function order_by(column, ascending)
+    {
+        sorted = sort_rows(rows, column, ascending);
+        result_table = Table.create(name, columns);
+        result_table.rows = sorted;
+        out result_table;
+    }
+
+    function update_where(pred, updater)
+    {
+        current = rows;
+        new_rows = [];
+        changed = 0;
+        for (r in current)
+        {
+            if (pred(r))
+            {
+                new_data = updater(r.data);
+                new_rows = new_rows.add(Row { id = r.id; data = new_data; });
+                changed = changed + 1;
+            }
+            else
+            {
+                new_rows = new_rows.add(r);
+            }
+        }
+        rows = new_rows;
+        out changed;
+    }
+
+    function delete_where(pred)
+    {
+        before = rows.count;
+        current = rows;
+        kept = [];
+        for (r in current)
+        {
+            match = pred(r);
+            if (not match)
+            {
+                kept = kept.add(r);
+            }
+        }
+        rows = kept;
+        out before - rows.count;
+    }
+
+    function find_first(pred)
+    {
+        for (r in rows)
+        {
+            if (pred(r)) { out r; }
+        }
+        out null;
+    }
+}
+
+function build_table(n)
+{
+    departments = ["Engineering", "Marketing", "HR", "Finance", "Sales", "Support", "Legal", "R&D"];
+    levels = ["Junior", "Mid", "Senior", "Lead", "Principal"];
+
+    t = Table.create("employees", ["name", "department", "salary", "age", "level"]);
+
+    count(i = 0, n)
+    {
+        t.insert([
+            "name": "emp_" + i,
+            "department": departments[i % 8],
+            "salary": 40000 + (i * 37 + 17) % 80000,
+            "age": 22 + i % 30,
+            "level": levels[i % 5]
+        ]);
+    }
+
+    out t;
+}
+
+function run_queries(t)
+{
+    checksum = 0;
+
+    // WHERE
+    high = t.where(action(r) { out 80000 < r.data["salary"]; });
+    checksum = checksum + high.rows.count;
+
+    eng = t.where(action(r) { out r.data["department"] == "Engineering"; });
+    checksum = checksum + eng.rows.count;
+
+    // ORDER BY + chained
+    sorted = t.order_by("salary", true);
+    checksum = checksum + sorted.rows.count - t.rows.count;
+    checksum = checksum + max_of(t.rows, "salary");
+
+    eng_sorted = eng.order_by("salary", true);
+    checksum = checksum + eng_sorted.rows.count;
+
+    // Aggregates
+    checksum = checksum + sum_of(t.rows, "salary");
+    checksum = checksum + avg_of(t.rows, "salary");
+    checksum = checksum + min_of(t.rows, "salary");
+    checksum = checksum + max_of(t.rows, "salary");
+
+    // GROUP BY
+    groups, keys = group_by(t.rows, "department");
+    for (dept in keys)
+    {
+        checksum = checksum + groups[dept].count;
+    }
+
+    // FIND FIRST
+    found = t.find_first(action(r) { out r.data["name"] == "emp_42"; });
+    if (found is not null)
+    {
+        checksum = checksum + found.data["salary"];
+    }
+
+    avg = avg_of(t.rows, "salary");
+    above = t.where(action(r) { out avg < r.data["salary"]; });
+    checksum = checksum + above.rows.count;
+
+    out checksum;
+}
+
+function main()
+{
+    n = 500;
+    iterations = 20;
+
+    show "Building table with " + n + " rows...";
+    _t = build_table(n);
+    show "Running " + iterations + " query iterations...";
+
+    total_checksum = 0;
+    count(iter = 0, iterations)
+    {
+        // Rebuild each iteration to include UPDATE/DELETE effects
+        t2 = build_table(n);
+        checksum = run_queries(t2);
+
+        // UPDATE
+        t2.update_where(
+            action(r) { out r.data["department"] == "Engineering"; },
+            action(d)
+            {
+                d["salary"] = d["salary"] + d["salary"] / 10;
+                out d;
+            }
+        );
+        checksum = checksum + sum_of(t2.rows, "salary");
+
+        // DELETE
+        removed = t2.delete_where(action(r) { out r.data["age"] < 25; });
+        checksum = checksum + removed;
+        checksum = checksum + t2.rows.count;
+
+        total_checksum = total_checksum + checksum;
+    }
+
+    show "Total checksum: " + total_checksum;
+    show "Database heavy complete.";
+}
+
+main();

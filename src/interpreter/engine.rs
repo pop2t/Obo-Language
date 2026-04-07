@@ -17,7 +17,7 @@ pub enum Signal {
     Out(Vec<Value>),
     Stop,
     Restart,
-    Yield(Value),
+    Yield,
 }
 
 /// Context for driving a generator from a for-in loop.

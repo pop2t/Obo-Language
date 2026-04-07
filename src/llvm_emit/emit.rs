@@ -134,6 +134,7 @@ pub fn emit_program(ir: &mut IrProgram) -> Result<(String, HashMap<String, LowTy
     out.push_str("declare i32 @printf(i8*, ...)\n");
     out.push_str("declare i32 @strcmp(i8*, i8*)\n");
     out.push_str("declare i8* @obo_str_concat(i8*, i8*)\n");
+    out.push_str("declare i8* @obo_str_concat_int(i8*, i64)\n");
     out.push_str("declare i8* @obo_i64_to_str(i64)\n");
     out.push_str("declare i8* @obo_list_new_i64(i64, i64*)\n");
     out.push_str("declare i64 @obo_list_len(i8*)\n");
@@ -165,6 +166,30 @@ pub fn emit_program(ir: &mut IrProgram) -> Result<(String, HashMap<String, LowTy
     out.push_str("declare void @obo_entity_put_boxed(i8*, i8*, i8*)\n");
     out.push_str("declare i8* @obo_entity_get_boxed(i8*, i8*)\n");
     out.push_str("declare void @obo_entity_print(i8*)\n");
+    // Slotted entity (compile-time field offsets)
+    out.push_str("declare i8* @obo_entity_new_slotted(i8*, i32)\n");
+    out.push_str("declare void @obo_entity_set_field_name(i8*, i32, i8*)\n");
+    out.push_str("declare i8* @obo_entity_get_slot(i8*, i32)\n");
+    out.push_str("declare void @obo_entity_set_slot_i64(i8*, i32, i64)\n");
+    out.push_str("declare void @obo_entity_set_slot_f64(i8*, i32, double)\n");
+    out.push_str("declare void @obo_entity_set_slot_str(i8*, i32, i8*)\n");
+    out.push_str("declare void @obo_entity_set_slot_bool(i8*, i32, i64)\n");
+    out.push_str("declare void @obo_entity_set_slot_null(i8*, i32)\n");
+    out.push_str("declare void @obo_entity_set_slot_list(i8*, i32, i8*)\n");
+    out.push_str("declare void @obo_entity_set_slot_map(i8*, i32, i8*)\n");
+    out.push_str("declare void @obo_entity_set_slot_entity(i8*, i32, i8*)\n");
+    out.push_str("declare void @obo_entity_set_slot_boxed(i8*, i32, i8*)\n");
+    // Hybrid entity access (slot-if-slotted, map-if-regular)
+    out.push_str("declare i8* @obo_entity_gfs(i8*, i32, i8*)\n");
+    out.push_str("declare void @obo_entity_sfs_i64(i8*, i32, i8*, i64)\n");
+    out.push_str("declare void @obo_entity_sfs_f64(i8*, i32, i8*, double)\n");
+    out.push_str("declare void @obo_entity_sfs_str(i8*, i32, i8*, i8*)\n");
+    out.push_str("declare void @obo_entity_sfs_bool(i8*, i32, i8*, i64)\n");
+    out.push_str("declare void @obo_entity_sfs_null(i8*, i32, i8*)\n");
+    out.push_str("declare void @obo_entity_sfs_list(i8*, i32, i8*, i8*)\n");
+    out.push_str("declare void @obo_entity_sfs_map(i8*, i32, i8*, i8*)\n");
+    out.push_str("declare void @obo_entity_sfs_entity(i8*, i32, i8*, i8*)\n");
+    out.push_str("declare void @obo_entity_sfs_boxed(i8*, i32, i8*, i8*)\n");
     out.push_str("declare void @obo_value_print(i8*)\n");
     // Set methods
     out.push_str("declare i8* @obo_set_new(i8*)\n");
@@ -385,6 +410,7 @@ pub fn emit_program(ir: &mut IrProgram) -> Result<(String, HashMap<String, LowTy
     out.push_str("declare double @obo_value_as_f64(i8*)\n");
     out.push_str("declare i8* @obo_value_as_str(i8*)\n");
     out.push_str("declare i64 @obo_value_compare(i8*, i8*)\n");
+    out.push_str("declare i8* @obo_dyn_arith(i8*, i8*, i32)\n");
     out.push_str("declare i64 @obo_value_to_closure_arg_boxed(i8*)\n");
     out.push_str("declare i8* @obo_value_to_str(i8*)\n");
     out.push_str("declare i8* @obo_format_list_string(i8*)\n");

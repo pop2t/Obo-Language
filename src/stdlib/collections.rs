@@ -1,4 +1,4 @@
-use crate::interpreter::value::Value;
+use crate::interpreter::value::{OboMap, Value};
 
 /// List member access (properties like .count, .first, .last, .empty, .reversed, .sorted)
 pub fn list_member(items: &[Value], member: &str) -> Option<Value> {
@@ -151,16 +151,16 @@ pub fn list_method(items: &[Value], method: &str, args: &[Value]) -> Option<Resu
 }
 
 /// Map member access
-pub fn map_member(pairs: &[(Value, Value)], member: &str) -> Option<Value> {
+pub fn map_member(map: &OboMap, member: &str) -> Option<Value> {
     match member {
-        "count" | "length" => Some(Value::Number(pairs.len() as i64)),
-        "empty" => Some(Value::Flag(pairs.is_empty())),
+        "count" | "length" => Some(Value::Number(map.len() as i64)),
+        "empty" => Some(Value::Flag(map.is_empty())),
         "keys" => {
-            let keys: Vec<Value> = pairs.iter().map(|(k, _)| k.clone()).collect();
+            let keys: Vec<Value> = map.keys().cloned().collect();
             Some(Value::List(keys))
         }
         "values" => {
-            let vals: Vec<Value> = pairs.iter().map(|(_, v)| v.clone()).collect();
+            let vals: Vec<Value> = map.values().cloned().collect();
             Some(Value::List(vals))
         }
         _ => None,
@@ -168,47 +168,37 @@ pub fn map_member(pairs: &[(Value, Value)], member: &str) -> Option<Value> {
 }
 
 /// Map method calls
-pub fn map_method(pairs: &[(Value, Value)], method: &str, args: &[Value]) -> Option<Result<Value, String>> {
+pub fn map_method(map: &OboMap, method: &str, args: &[Value]) -> Option<Result<Value, String>> {
     match method {
         "get" => {
             if let Some(key) = args.first() {
-                for (k, v) in pairs {
-                    if k == key {
-                        return Some(Ok(v.clone()));
+                match map.get(key) {
+                    Some(v) => return Some(Ok(v.clone())),
+                    None => {
+                        let fallback = args.get(1).cloned().unwrap_or(Value::Null);
+                        return Some(Ok(fallback));
                     }
                 }
-                let fallback = args.get(1).cloned().unwrap_or(Value::Null);
-                return Some(Ok(fallback));
             }
             Some(Err("Obo: get needs a key 🤌".into()))
         }
         "has" => {
             if let Some(key) = args.first() {
-                return Some(Ok(Value::Flag(pairs.iter().any(|(k, _)| k == key))));
+                return Some(Ok(Value::Flag(map.has(key))));
             }
             Some(Err("Obo: has needs a key 🤌".into()))
         }
         "set" => {
             if args.len() >= 2 {
-                let mut new_pairs = pairs.to_vec();
-                let key = &args[0];
-                let val = &args[1];
-                if let Some(pos) = new_pairs.iter().position(|(k, _)| k == key) {
-                    new_pairs[pos].1 = val.clone();
-                } else {
-                    new_pairs.push((key.clone(), val.clone()));
-                }
-                return Some(Ok(Value::Map(new_pairs)));
+                let mut new_map = map.clone();
+                new_map.set(args[0].clone(), args[1].clone());
+                return Some(Ok(Value::Map(new_map)));
             }
             Some(Err("Obo: set needs a key and a value 🤌".into()))
         }
         "remove" => {
             if let Some(key) = args.first() {
-                let new_pairs: Vec<(Value, Value)> = pairs.iter()
-                    .filter(|(k, _)| k != key)
-                    .cloned()
-                    .collect();
-                return Some(Ok(Value::Map(new_pairs)));
+                return Some(Ok(Value::Map(map.remove(key))));
             }
             Some(Err("Obo: remove needs a key 🤌".into()))
         }

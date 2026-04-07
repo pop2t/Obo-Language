@@ -1,0 +1,19 @@
+entity Pt { x; y; }
+
+function main()
+{
+    p = Pt { x = 1.5; y = 2.5; };
+    show p.x;
+    show p.y;
+    p.x = p.x + 10.0;
+    show p.x;
+
+    pts = [Pt { x = 1.0; y = 2.0; }, Pt { x = 3.0; y = 4.0; }];
+    a = pts[0];
+    show a.x;
+    a.x = a.x + 100.0;
+    show a.x;
+    show pts[0].x;
+}
+
+main();

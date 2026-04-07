@@ -1,0 +1,26 @@
+entity TreeNode
+{
+    left;
+    right;
+}
+
+function make_tree(depth)
+{
+    if (depth == 0) { out TreeNode { left = null; right = null; }; }
+    out TreeNode { left = make_tree(depth - 1); right = make_tree(depth - 1); };
+}
+
+function check_tree(node)
+{
+    if (node.left is null) { out 1; }
+    out 1 + check_tree(node.left) + check_tree(node.right);
+}
+
+function main()
+{
+    tree = make_tree(12);
+    show "tree built";
+    show "check: " + check_tree(tree);
+}
+
+main();

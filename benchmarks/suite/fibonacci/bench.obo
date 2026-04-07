@@ -1,0 +1,16 @@
+/// OBO Benchmark: Fibonacci (recursive)
+/// Tests: function call overhead, recursion depth, integer arithmetic
+
+function fib(n)
+{
+    if (n < 2) { out n; }
+    out fib(n - 1) + fib(n - 2);
+}
+
+function main()
+{
+    result = fib(35);
+    show "fib(35) = " + result;
+}
+
+main();

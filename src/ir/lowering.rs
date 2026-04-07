@@ -256,6 +256,10 @@ impl Lowering {
                         self.function_names.insert(f.name.clone());
                     }
                 }
+                ast::Declaration::Entity(e) => {
+                    let fields: Vec<String> = e.fields.iter().map(|f| f.name.clone()).collect();
+                    ir.entity_layouts.insert(e.name.clone(), fields);
+                }
                 _ => {}
             }
         }

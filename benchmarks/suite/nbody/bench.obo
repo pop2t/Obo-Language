@@ -1,0 +1,138 @@
+/// OBO Benchmark: N-Body (Benchmarks Game — Solar System simulation)
+/// Tests: floating-point arithmetic, entity field mutation, Math.sqrt
+
+use Math;
+
+entity Body { x; y; z; vx; vy; vz; mass; }
+
+function advance(bodies, nbodies, dt)
+{
+    count(i = 0, nbodies)
+    {
+        bi = bodies[i];
+        count(j = i + 1, nbodies)
+        {
+            bj = bodies[j];
+            dx = bi.x - bj.x;
+            dy = bi.y - bj.y;
+            dz = bi.z - bj.z;
+            dist2 = dx * dx + dy * dy + dz * dz;
+            dist = Math.sqrt(dist2);
+            mag = dt / (dist2 * dist);
+
+            bi.vx = bi.vx - dx * bj.mass * mag;
+            bi.vy = bi.vy - dy * bj.mass * mag;
+            bi.vz = bi.vz - dz * bj.mass * mag;
+            bj.vx = bj.vx + dx * bi.mass * mag;
+            bj.vy = bj.vy + dy * bi.mass * mag;
+            bj.vz = bj.vz + dz * bi.mass * mag;
+        }
+    }
+    count(i = 0, nbodies)
+    {
+        bi = bodies[i];
+        bi.x = bi.x + dt * bi.vx;
+        bi.y = bi.y + dt * bi.vy;
+        bi.z = bi.z + dt * bi.vz;
+    }
+}
+
+function energy(bodies, nbodies)
+{
+    e = 0.0;
+    count(i = 0, nbodies)
+    {
+        bi = bodies[i];
+        e = e + 0.5 * bi.mass * (bi.vx * bi.vx + bi.vy * bi.vy + bi.vz * bi.vz);
+        count(j = i + 1, nbodies)
+        {
+            bj = bodies[j];
+            dx = bi.x - bj.x;
+            dy = bi.y - bj.y;
+            dz = bi.z - bj.z;
+            dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            e = e - bi.mass * bj.mass / dist;
+        }
+    }
+    out e;
+}
+
+function main()
+{
+    solar_mass = 4.0 * Math.pi * Math.pi;
+    days_per_year = 365.24;
+
+    sun = Body {
+        x = 0.0; y = 0.0; z = 0.0;
+        vx = 0.0; vy = 0.0; vz = 0.0;
+        mass = solar_mass;
+    };
+
+    jupiter = Body {
+        x = 4.84143144246472090;
+        y = -1.16032004402742839;
+        z = -0.103622044471123109;
+        vx = 0.00166007664274403694 * days_per_year;
+        vy = 0.00769901118419740425 * days_per_year;
+        vz = -0.0000690460016972063023 * days_per_year;
+        mass = 0.000954791938424326609 * solar_mass;
+    };
+
+    saturn = Body {
+        x = 8.34336671824457987;
+        y = 4.12479856412430479;
+        z = -0.403523417114321381;
+        vx = -0.00276742510726862411 * days_per_year;
+        vy = 0.00499852801234917238 * days_per_year;
+        vz = 0.0000230417297573763929 * days_per_year;
+        mass = 0.000285885980666130812 * solar_mass;
+    };
+
+    uranus = Body {
+        x = 12.894369562139131;
+        y = -15.1111514016986312;
+        z = -0.223307578892655734;
+        vx = 0.00296460137564761618 * days_per_year;
+        vy = 0.0023784717395948095 * days_per_year;
+        vz = -0.0000296589568540237556 * days_per_year;
+        mass = 0.0000436624404335156298 * solar_mass;
+    };
+
+    neptune = Body {
+        x = 15.3796971148509165;
+        y = -25.9193146099879641;
+        z = 0.179258772950371181;
+        vx = 0.00268067772490389322 * days_per_year;
+        vy = 0.00162824170038242295 * days_per_year;
+        vz = -0.0000951592254519715870 * days_per_year;
+        mass = 0.0000515138902046611451 * solar_mass;
+    };
+
+    bodies = [sun, jupiter, saturn, uranus, neptune];
+    nbodies = 5;
+
+    // Offset momentum
+    px = 0.0; py = 0.0; pz = 0.0;
+    count(i = 0, nbodies)
+    {
+        b = bodies[i];
+        px = px + b.vx * b.mass;
+        py = py + b.vy * b.mass;
+        pz = pz + b.vz * b.mass;
+    }
+    sun.vx = 0.0 - px / solar_mass;
+    sun.vy = 0.0 - py / solar_mass;
+    sun.vz = 0.0 - pz / solar_mass;
+
+    n = 500000;
+    show energy(bodies, nbodies);
+
+    count(i = 0, n)
+    {
+        advance(bodies, nbodies, 0.01);
+    }
+
+    show energy(bodies, nbodies);
+}
+
+main();

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::error::{ErrorKind, OboError};
 use crate::parser::ast::*;
+use crate::stdlib::SYSTEM_ACTORS;
 
 use super::super::symbols::*;
 use super::super::types::OboType;
@@ -64,11 +65,26 @@ impl Checker {
                 }
             }
             Declaration::Statement(_)
-            | Declaration::Use(_)
             | Declaration::TypeAlias(_)
             | Declaration::Extend(_)
             | Declaration::Bridge(_)
             | Declaration::ConditionalCompilation(_) => {}
+
+            Declaration::Use(use_decl) => {
+                // Register system actors (Math, Time, etc.) so the checker
+                // doesn't reject them as undeclared variables.
+                for name in &use_decl.path {
+                    if SYSTEM_ACTORS.contains(&name.as_str()) {
+                        self.symbols.define_variable(
+                            name,
+                            OboType::Unknown,
+                            SymbolKind::Variable,
+                            false,
+                            use_decl.span,
+                        );
+                    }
+                }
+            }
         }
     }
 

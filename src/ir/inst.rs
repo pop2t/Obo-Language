@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::fmt;
 
 /// A unique ID for a temporary value: %0, %1, %2, ...
@@ -295,6 +296,8 @@ pub struct IrProgram {
     pub functions: Vec<IrFunction>,
     pub constants: Vec<(String, Constant)>,
     pub bridge_fns: Vec<IrBridgeFn>,
+    /// Entity type → ordered list of field names (for struct-layout optimisation).
+    pub entity_layouts: HashMap<String, Vec<String>>,
 }
 
 impl IrProgram {
@@ -303,6 +306,7 @@ impl IrProgram {
             functions: Vec::new(),
             constants: Vec::new(),
             bridge_fns: Vec::new(),
+            entity_layouts: HashMap::new(),
         }
     }
 }

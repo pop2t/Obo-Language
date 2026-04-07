@@ -1,0 +1,28 @@
+actor Box
+{
+    public rows;
+
+    shared function create()
+    {
+        out Box { rows = []; };
+    }
+
+    function clone_current_rows()
+    {
+        show "inside_rows=" + rows.count;
+        t = Box.create();
+        t.rows = rows;
+        out t;
+    }
+}
+
+function main()
+{
+    b = Box.create();
+    b.rows = [1, 2, 3];
+    show "outer_rows=" + b.rows.count;
+    c = b.clone_current_rows();
+    show "cloned_rows=" + c.rows.count;
+}
+
+main();

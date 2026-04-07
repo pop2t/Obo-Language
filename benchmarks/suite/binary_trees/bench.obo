@@ -1,0 +1,51 @@
+/// OBO Benchmark: Binary Trees (Benchmarks Game)
+/// Tests: recursive entity allocation, tree traversal, memory management
+
+entity TreeNode
+{
+    left;
+    right;
+}
+
+function make_tree(depth)
+{
+    if (depth == 0) { out TreeNode { left = null; right = null; }; }
+    out TreeNode { left = make_tree(depth - 1); right = make_tree(depth - 1); };
+}
+
+function check_tree(node)
+{
+    if (node.left is null) { out 1; }
+    out 1 + check_tree(node.left) + check_tree(node.right);
+}
+
+function main()
+{
+    min_depth = 4;
+    max_depth = 10;
+    stretch_depth = max_depth + 1;
+
+    stretch = make_tree(stretch_depth);
+    show "stretch tree of depth " + stretch_depth + "\t check: " + check_tree(stretch);
+
+    long_lived = make_tree(max_depth);
+
+    d = min_depth;
+    while (d <= max_depth)
+    {
+        iterations = 1;
+        count(j = 0, max_depth - d + min_depth) { iterations = iterations * 2; }
+
+        chk = 0;
+        count(i = 1, iterations + 1)
+        {
+            chk = chk + check_tree(make_tree(d));
+        }
+        show "" + iterations + "\t trees of depth " + d + "\t check: " + chk;
+        d = d + 2;
+    }
+
+    show "long lived tree of depth " + max_depth + "\t check: " + check_tree(long_lived);
+}
+
+main();

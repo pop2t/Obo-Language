@@ -1,0 +1,71 @@
+/// OBO Benchmark: Map Stress — Hash map / dictionary heavy workload
+/// Tests: map creation, insertion, lookup, iteration, deletion
+/// This is Python's home turf (dicts are highly optimized in CPython)
+
+function main()
+{
+    n = 50000;
+
+    // Phase 1: Build a large map
+    m = ["__init": 0];
+    count(i = 0, n)
+    {
+        key = "key_" + i;
+        m = m.set(key, i * 7 + 3);
+    }
+    m = m.remove("__init");
+    show "Phase 1: Built map with " + m.count + " entries";
+
+    // Phase 2: Lookup every key and accumulate
+    sum = 0;
+    count(i = 0, n)
+    {
+        key = "key_" + i;
+        sum = sum + m[key];
+    }
+    show "Phase 2: Sum of all values = " + sum;
+
+    // Phase 3: Build frequency map from list
+    items = [];
+    count(i = 0, n)
+    {
+        items = items.add(i % 100);
+    }
+
+    freq = ["__init": 0];
+    for (item in items)
+    {
+        key = "" + item;
+        if (freq.has(key))
+        {
+            freq = freq.set(key, freq[key] + 1);
+        }
+        else
+        {
+            freq = freq.set(key, 1);
+        }
+    }
+    freq = freq.remove("__init");
+    show "Phase 3: Frequency map has " + freq.count + " unique keys";
+
+    // Phase 4: Nested map operations — build, query, aggregate
+    total = 0;
+    count(round = 0, 200)
+    {
+        inner = ["__init": 0];
+        count(j = 0, 500)
+        {
+            inner = inner.set("k" + j, round * 500 + j);
+        }
+        inner = inner.remove("__init");
+        count(j = 0, 500)
+        {
+            total = total + inner["k" + j];
+        }
+    }
+    show "Phase 4: Nested map total = " + total;
+
+    show "Map stress complete.";
+}
+
+main();

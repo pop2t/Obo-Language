@@ -67,7 +67,7 @@ impl Interpreter {
                         Signal::Stop => break,
                         Signal::Out(v) => return Ok(Signal::Out(v)),
                         Signal::Restart => continue,
-                        Signal::None | Signal::Yield(_) => {}
+                        Signal::None | Signal::Yield => {}
                     }
                 }
                 Ok(Signal::None)
@@ -81,7 +81,7 @@ impl Interpreter {
                         Signal::Stop => break,
                         Signal::Out(v) => return Ok(Signal::Out(v)),
                         Signal::Restart => continue,
-                        Signal::None | Signal::Yield(_) => {}
+                        Signal::None | Signal::Yield => {}
                     }
                 }
                 Ok(Signal::None)
@@ -117,7 +117,7 @@ impl Interpreter {
                         Signal::Stop => break,
                         Signal::Out(v) => return Ok(Signal::Out(v)),
                         Signal::Restart => {}
-                        Signal::None | Signal::Yield(_) => {}
+                        Signal::None | Signal::Yield => {}
                     }
                     i += step;
                 }
@@ -183,7 +183,7 @@ impl Interpreter {
                         Signal::Stop => break,
                         Signal::Out(v) => return Ok(Signal::Out(v)),
                         Signal::Restart => continue,
-                        Signal::None | Signal::Yield(_) => {}
+                        Signal::None | Signal::Yield => {}
                     }
                 }
                 Ok(Signal::None)
@@ -267,7 +267,8 @@ impl Interpreter {
                         _ => Ok(Signal::None),
                     };
                 }
-                Ok(Signal::Yield(value))
+                let _ = value;
+                Ok(Signal::Yield)
             }
             Statement::Run(r) => {
                 let _task = self.spawn_task_expr(&r.expr)?;
@@ -410,12 +411,12 @@ impl Interpreter {
             }
             Expr::MemberAccess(obj, field, _) => {
                 if let Expr::Identifier(name, _) = obj.as_ref() {
-                    let mut instance = self
+                    let instance = self
                         .env
                         .get(name)
                         .cloned()
                         .ok_or_else(|| format!("Obo: I don't see '{}' anywhere 👀", name))?;
-                    if let Value::Instance(ref mut inst) = instance {
+                    if let Value::Instance(ref inst) = instance {
                         // Check for property setter
                         if let Some(TypeDef::Actor(actor)) = self.type_registry.get(&inst.type_name).cloned() {
                             for m in &actor.members {
@@ -423,15 +424,16 @@ impl Interpreter {
                                     if prop.name == *field {
                                         if let Some((ref param_name, ref setter_body)) = prop.setter {
                                             self.env.push_scope();
-                                            for (k, v) in &inst.fields {
+                                            let fields = inst.snapshot_fields();
+                                            for (k, v) in &fields {
                                                 self.env.define(k, v.clone());
                                             }
                                             self.env.define(&param_name, value);
                                             self.exec_statements(setter_body)?;
                                             // Collect modified fields back
-                                            for (k, _) in inst.fields.clone() {
+                                            for k in fields.keys() {
                                                 if let Some(v) = self.env.get(&k).cloned() {
-                                                    inst.fields.insert(k, v);
+                                                    inst.set_field(k.clone(), v);
                                                 }
                                             }
                                             self.env.pop_scope();
@@ -445,7 +447,7 @@ impl Interpreter {
                                 }
                             }
                         }
-                        inst.fields.insert(field.clone(), value);
+                        inst.set_field(field.clone(), value);
                         self.env.define_or_set(name, instance);
                         return Ok(());
                     }
@@ -473,15 +475,8 @@ impl Interpreter {
                                 ));
                             }
                         }
-                        (Value::Map(pairs), _) => {
-                            for pair in pairs.iter_mut() {
-                                if pair.0 == idx {
-                                    pair.1 = value.clone();
-                                    self.env.define_or_set(name, container);
-                                    return Ok(());
-                                }
-                            }
-                            pairs.push((idx, value));
+                        (Value::Map(map), _) => {
+                            map.set(idx, value);
                         }
                         _ => return Err("Obo: Can't index into this 🤨".into()),
                     }

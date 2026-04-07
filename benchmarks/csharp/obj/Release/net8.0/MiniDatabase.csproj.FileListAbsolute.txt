@@ -1,0 +1,15 @@
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/bin/Release/net8.0/MiniDatabase
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/bin/Release/net8.0/MiniDatabase.deps.json
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/bin/Release/net8.0/MiniDatabase.runtimeconfig.json
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/bin/Release/net8.0/MiniDatabase.dll
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/bin/Release/net8.0/MiniDatabase.pdb
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/obj/Release/net8.0/MiniDatabase.GeneratedMSBuildEditorConfig.editorconfig
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/obj/Release/net8.0/MiniDatabase.AssemblyInfoInputs.cache
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/obj/Release/net8.0/MiniDatabase.AssemblyInfo.cs
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/obj/Release/net8.0/MiniDatabase.csproj.CoreCompileInputs.cache
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/obj/Release/net8.0/MiniDatabase.sourcelink.json
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/obj/Release/net8.0/MiniDatabase.dll
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/obj/Release/net8.0/refint/MiniDatabase.dll
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/obj/Release/net8.0/MiniDatabase.pdb
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/obj/Release/net8.0/MiniDatabase.genruntimeconfig.cache
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/csharp/obj/Release/net8.0/ref/MiniDatabase.dll
