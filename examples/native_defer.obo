@@ -1,0 +1,28 @@
+/// Test defer in metal blocks
+
+function main()
+{
+    metal
+    {
+        show "start";
+        defer
+        {
+            show "cleanup 1";
+        }
+        show "middle";
+        defer
+        {
+            show "cleanup 2";
+        }
+        show "end";
+    }
+    // Expected output:
+    // start
+    // middle
+    // end
+    // cleanup 2
+    // cleanup 1
+
+    show "---";
+    show "defer works!";
+}

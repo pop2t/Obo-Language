@@ -353,6 +353,7 @@ impl AstPrinter {
             Statement::PossibleBlock(_) => self.line("PossibleBlock { ... }"),
             Statement::SafeBlock(_, _) => self.line("SafeBlock { ... }"),
             Statement::MetalBlock(_, _) => self.line("MetalBlock { ... }"),
+            Statement::Defer(_, _) => self.line("Defer { ... }"),
             Statement::Assert(a) => {
                 let cond = self.print_expr_inline(&a.condition);
                 if let Some(ref msg) = a.message {
@@ -394,6 +395,7 @@ impl AstPrinter {
                 let op_str = match op {
                     UnaryOp::Neg => "-",
                     UnaryOp::Not => "not ",
+                    UnaryOp::BitNot => "~",
                 };
                 format!("({}{})", op_str, self.print_expr_inline(operand))
             }
@@ -505,6 +507,17 @@ impl AstPrinter {
                     self.print_expr_inline(left),
                     self.print_expr_inline(right)
                 )
+            }
+            Expr::Own(expr, _) => {
+                format!("own {}", self.print_expr_inline(expr))
+            }
+            Expr::InlineAsm(template, constraints, inputs, _) => {
+                let inp: Vec<String> = inputs.iter().map(|e| self.print_expr_inline(e)).collect();
+                if inp.is_empty() {
+                    format!("asm(\"{}\", \"{}\")", template, constraints)
+                } else {
+                    format!("asm(\"{}\", \"{}\", {})", template, constraints, inp.join(", "))
+                }
             }
             Expr::Interpolation(parts, _) => {
                 let p: Vec<String> = parts.iter().map(|e| self.print_expr_inline(e)).collect();

@@ -1,0 +1,52 @@
+// Fixed-width integer types test
+
+function main()
+{
+    // i32 type annotation and coercion
+    i32 x = 42;
+    show x;  // 42
+
+    // i16 type
+    i16 y = 1000;
+    show y;  // 1000
+
+    // i8 type
+    i8 z = -100;
+    show z;  // -100
+
+    // u16 type
+    u16 port = 8080;
+    show port;  // 8080
+
+    // u32 type
+    u32 big = 100000;
+    show big;  // 100000
+
+    // u64 type
+    u64 huge = 999999999;
+    show huge;  // 999999999
+
+    // Arithmetic between fixed-width types
+    i32 a = 10;
+    i32 b = 20;
+    i32 c = (i32)(a + b);
+    show c;  // 30
+
+    // Mixing with number promotes to number
+    n = a + 100;
+    show n;  // 110
+
+    // Bitwise on fixed-width
+    i32 mask = (i32)(0xFF & 0x0F);
+    show mask;  // 15
+
+    // i64 is alias for number
+    i64 num = 42;
+    show num;  // 42
+
+    // u8 is alias for byte
+    u8 small = (u8)200;
+    show small;  // 200
+
+    show "All fixed-width tests passed!";
+}

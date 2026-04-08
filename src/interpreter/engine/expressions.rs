@@ -41,9 +41,17 @@ impl Interpreter {
                     UnaryOp::Neg => match val {
                         Value::Number(n) => Ok(Value::Number(-n)),
                         Value::Decimal(n) => Ok(Value::Decimal(-n)),
+                        Value::FixedInt(n, w) => Ok(Value::FixedInt(w.truncate(-n), w)),
+                        Value::Float32(n) => Ok(Value::Float32(-n)),
                         _ => Err(format!("Obo: Can't negate a {} 🤨", val.type_name())),
                     },
                     UnaryOp::Not => Ok(Value::Flag(!val.is_truthy())),
+                    UnaryOp::BitNot => match val {
+                        Value::Number(n) => Ok(Value::Number(!n)),
+                        Value::Byte(b) => Ok(Value::Byte(!b)),
+                        Value::FixedInt(n, w) => Ok(Value::FixedInt(w.truncate(!n), w)),
+                        _ => Err(format!("Obo: Can't bitwise-NOT a {} 🤨", val.type_name())),
+                    },
                 }
             }
             Expr::Logical(left, op, right, _) => {
@@ -238,16 +246,26 @@ impl Interpreter {
                 }
                 Ok(Value::Text(result))
             }
+            Expr::Own(expr, _) => {
+                // In interpreter mode, own just evaluates the inner expression.
+                // Ownership tracking is handled at the block level.
+                self.eval_expr(expr)
+            }
+            Expr::InlineAsm(_, _, _, _) => {
+                Err("inline assembly is not supported in interpreter mode — use native compilation".into())
+            }
         }
     }
 
-    fn eval_binary(&mut self, lhs: &Value, op: &BinOp, rhs: &Value) -> Result<Value, String> {
+    pub(super) fn eval_binary(&mut self, lhs: &Value, op: &BinOp, rhs: &Value) -> Result<Value, String> {
         // Check for operator overloading on instances
         if let Value::Instance(inst) = lhs {
             let op_str = match op {
                 BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*", BinOp::Div => "/",
                 BinOp::Mod => "%", BinOp::Eq => "==", BinOp::NotEq => "!=",
                 BinOp::Less => "<", BinOp::Greater => ">", BinOp::LessEq => "<=", BinOp::GreaterEq => ">=",
+                BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
+                BinOp::Shl => "<<", BinOp::Shr => ">>",
             };
             if let Some(TypeDef::Actor(actor)) = self.type_registry.get(&inst.type_name).cloned() {
                 for m in &actor.members {
@@ -273,12 +291,47 @@ impl Interpreter {
             }
         }
 
+        // --- VALUE TYPE component-wise arithmetic ---
+        if let (Value::Instance(linst), Value::Instance(rinst)) = (lhs, rhs) {
+            if linst.type_name == rinst.type_name
+                && self.value_types.contains(&linst.type_name)
+                && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+            {
+                let lfields = linst.snapshot_fields();
+                let rfields = rinst.snapshot_fields();
+                let mut result_fields = HashMap::new();
+                for (key, lval) in &lfields {
+                    if let Some(rval) = rfields.get(key) {
+                        let res = self.eval_binary(lval, op, rval)?;
+                        result_fields.insert(key.clone(), res);
+                    }
+                }
+                return Ok(Value::Instance(OboInstance::new(
+                    self.fresh_instance_id(),
+                    linst.type_name.clone(),
+                    result_fields,
+                )));
+            }
+        }
+
         match op {
             BinOp::Add => match (lhs, rhs) {
                 (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
                 (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a + b)),
                 (Value::Number(a), Value::Decimal(b)) => Ok(Value::Decimal(*a as f64 + b)),
                 (Value::Decimal(a), Value::Number(b)) => Ok(Value::Decimal(a + *b as f64)),
+                (Value::FixedInt(a, w), Value::FixedInt(b, _)) => {
+                    Ok(Value::FixedInt(w.truncate(a + b), *w))
+                }
+                (Value::FixedInt(a, _), Value::Number(b)) => Ok(Value::Number(a + b)),
+                (Value::Number(a), Value::FixedInt(b, _)) => Ok(Value::Number(a + b)),
+                (Value::FixedInt(a, _), Value::Decimal(b)) => Ok(Value::Decimal(*a as f64 + b)),
+                (Value::Decimal(a), Value::FixedInt(b, _)) => Ok(Value::Decimal(a + *b as f64)),
+                (Value::Float32(a), Value::Float32(b)) => Ok(Value::Float32(a + b)),
+                (Value::Float32(a), Value::Decimal(b)) => Ok(Value::Decimal(*a as f64 + b)),
+                (Value::Decimal(a), Value::Float32(b)) => Ok(Value::Decimal(a + *b as f64)),
+                (Value::Float32(a), Value::Number(b)) => Ok(Value::Float32(a + *b as f32)),
+                (Value::Number(a), Value::Float32(b)) => Ok(Value::Float32(*a as f32 + b)),
                 (Value::Text(a), Value::Text(b)) => Ok(Value::Text(format!("{}{}", a, b))),
                 (Value::Text(a), other) => Ok(Value::Text(format!("{}{}", a, other))),
                 (other, Value::Text(b)) => Ok(Value::Text(format!("{}{}", other, b))),
@@ -311,6 +364,40 @@ impl Interpreter {
             BinOp::Greater => Ok(Value::Flag(self.compare_values(lhs, rhs)? > 0)),
             BinOp::LessEq => Ok(Value::Flag(self.compare_values(lhs, rhs)? <= 0)),
             BinOp::GreaterEq => Ok(Value::Flag(self.compare_values(lhs, rhs)? >= 0)),
+            BinOp::BitAnd => self.integer_op(lhs, rhs, |a, b| a & b, "&"),
+            BinOp::BitOr => self.integer_op(lhs, rhs, |a, b| a | b, "|"),
+            BinOp::BitXor => self.integer_op(lhs, rhs, |a, b| a ^ b, "^"),
+            BinOp::Shl => self.integer_op(lhs, rhs, |a, b| a << (b & 63), "<<"),
+            BinOp::Shr => self.integer_op(lhs, rhs, |a, b| a >> (b & 63), ">>"),
+        }
+    }
+
+    fn integer_op(
+        &self,
+        lhs: &Value,
+        rhs: &Value,
+        int_op: fn(i64, i64) -> i64,
+        op_name: &str,
+    ) -> Result<Value, String> {
+        match (lhs, rhs) {
+            (Value::Number(a), Value::Number(b)) => Ok(Value::Number(int_op(*a, *b))),
+            (Value::Byte(a), Value::Byte(b)) => {
+                let result = int_op(*a as i64, *b as i64);
+                Ok(Value::Byte(result as u8))
+            }
+            (Value::Byte(a), Value::Number(b)) => Ok(Value::Number(int_op(*a as i64, *b))),
+            (Value::Number(a), Value::Byte(b)) => Ok(Value::Number(int_op(*a, *b as i64))),
+            (Value::FixedInt(a, w), Value::FixedInt(b, _)) => {
+                Ok(Value::FixedInt(w.truncate(int_op(*a, *b)), *w))
+            }
+            (Value::FixedInt(a, _), Value::Number(b)) => Ok(Value::Number(int_op(*a, *b))),
+            (Value::Number(a), Value::FixedInt(b, _)) => Ok(Value::Number(int_op(*a, *b))),
+            _ => Err(format!(
+                "Obo: Can't use '{}' with {} and {} — bitwise ops need integers 🤨",
+                op_name,
+                lhs.type_name(),
+                rhs.type_name()
+            )),
         }
     }
 
@@ -337,6 +424,18 @@ impl Interpreter {
             }
             (Value::Byte(a), Value::Number(b)) => Ok(Value::Number(int_op(*a as i64, *b))),
             (Value::Number(a), Value::Byte(b)) => Ok(Value::Number(int_op(*a, *b as i64))),
+            (Value::FixedInt(a, w), Value::FixedInt(b, _)) => {
+                Ok(Value::FixedInt(w.truncate(int_op(*a, *b)), *w))
+            }
+            (Value::FixedInt(a, _), Value::Number(b)) => Ok(Value::Number(int_op(*a, *b))),
+            (Value::Number(a), Value::FixedInt(b, _)) => Ok(Value::Number(int_op(*a, *b))),
+            (Value::FixedInt(a, _), Value::Decimal(b)) => Ok(Value::Decimal(float_op(*a as f64, *b))),
+            (Value::Decimal(a), Value::FixedInt(b, _)) => Ok(Value::Decimal(float_op(*a, *b as f64))),
+            (Value::Float32(a), Value::Float32(b)) => Ok(Value::Float32(float_op(*a as f64, *b as f64) as f32)),
+            (Value::Float32(a), Value::Decimal(b)) => Ok(Value::Decimal(float_op(*a as f64, *b))),
+            (Value::Decimal(a), Value::Float32(b)) => Ok(Value::Decimal(float_op(*a, *b as f64))),
+            (Value::Float32(a), Value::Number(b)) => Ok(Value::Float32(float_op(*a as f64, *b as f64) as f32)),
+            (Value::Number(a), Value::Float32(b)) => Ok(Value::Float32(float_op(*a as f64, *b as f64) as f32)),
             _ => Err(format!(
                 "Obo: Can't use '{}' with {} and {} 🤨",
                 op_name,
@@ -532,6 +631,18 @@ impl Interpreter {
                         }
                     }
                     _ => Err(format!("Obo: pointer doesn't have '{}' 🤨", member)),
+                }
+            }
+            Value::Handle(_) => {
+                match member {
+                    "address" => {
+                        if let Value::Handle(addr) = object {
+                            Ok(Value::Number(*addr as i64))
+                        } else {
+                            Ok(Value::Number(0))
+                        }
+                    }
+                    _ => Err(format!("Obo: handle doesn't have '{}' 🤨", member)),
                 }
             }
             Value::Byte(b) => {

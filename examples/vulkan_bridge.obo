@@ -1,0 +1,70 @@
+/// Vulkan bridge — OBO wrapper for Vulkan C API
+/// Demonstrates roadmap 7.3: Vulkan is a C API, so bridge works directly.
+/// Uses packed structs (2.2) for Vulkan struct layout and handle (7.4) for resources.
+///
+/// Usage:
+///   obo build examples/vulkan_bridge.obo --emit-ll --no-link
+///   clang -O2 -o vulkan_app vulkan_bridge.ll obo_rt.c -lvulkan
+
+bridge "vulkan"
+{
+    // Instance
+    function vkCreateInstance(info as pointer, alloc as pointer, instance as pointer) out i32;
+    function vkDestroyInstance(instance as handle, alloc as pointer) out i64;
+
+    // Physical device
+    function vkEnumeratePhysicalDevices(instance as handle, count as pointer, devices as pointer) out i32;
+
+    // Logical device
+    function vkCreateDevice(physdev as handle, info as pointer, alloc as pointer, device as pointer) out i32;
+    function vkDestroyDevice(device as handle, alloc as pointer) out i64;
+    function vkDeviceWaitIdle(device as handle) out i32;
+
+    // Buffer
+    function vkCreateBuffer(device as handle, info as pointer, alloc as pointer, buffer as pointer) out i32;
+    function vkDestroyBuffer(device as handle, buffer as handle, alloc as pointer) out i64;
+
+    // Memory
+    function vkAllocateMemory(device as handle, info as pointer, alloc as pointer, memory as pointer) out i32;
+    function vkFreeMemory(device as handle, memory as handle, alloc as pointer) out i64;
+    function vkBindBufferMemory(device as handle, buffer as handle, memory as handle, offset as i64) out i32;
+    function vkMapMemory(device as handle, memory as handle, offset as i64, size as i64, flags as i32, data as pointer) out i32;
+    function vkUnmapMemory(device as handle, memory as handle) out i64;
+
+    // Command pool
+    function vkCreateCommandPool(device as handle, info as pointer, alloc as pointer, pool as pointer) out i32;
+    function vkDestroyCommandPool(device as handle, pool as handle, alloc as pointer) out i64;
+}
+
+// Vulkan struct layouts — packed for exact binary compatibility
+packed entity VkApplicationInfo {
+    sType as i32;
+    pNext as pointer;
+    pApplicationName as pointer;
+    applicationVersion as u32;
+    pEngineName as pointer;
+    engineVersion as u32;
+    apiVersion as u32;
+}
+
+packed entity VkInstanceCreateInfo {
+    sType as i32;
+    pNext as pointer;
+    flags as u32;
+    pApplicationInfo as pointer;
+    enabledLayerCount as u32;
+    ppEnabledLayerNames as pointer;
+    enabledExtensionCount as u32;
+    ppEnabledExtensionNames as pointer;
+}
+
+/// Example: Vulkan instance creation pattern
+function main() {
+    metal {
+        show "Vulkan bridge declarations ready";
+        show "packed structs provide exact memory layout for Vulkan API structs";
+        show "handle type provides non-GC resource lifetime for Vulkan objects";
+    }
+
+    show "done";
+}

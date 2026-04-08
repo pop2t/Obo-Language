@@ -8,7 +8,7 @@ pub mod convert;
 use crate::interpreter::value::Value;
 
 /// System actor names that are accessible globally without `use`.
-pub const SYSTEM_ACTORS: &[&str] = &["Math", "Time", "File", "Convert", "pointer"];
+pub const SYSTEM_ACTORS: &[&str] = &["Math", "Time", "File", "Convert", "pointer", "mem"];
 
 /// Resolve a system actor member access like `Math.pi`
 pub fn system_member(actor: &str, member: &str) -> Option<Value> {
@@ -35,6 +35,12 @@ pub fn system_call(actor: &str, method: &str, args: &[Value]) -> Option<Result<V
                 Err("Obo: pointer.free() requires native compilation — use 'obo build' 🔧".into())
             }
             _ => Err(format!("Obo: pointer doesn't have '{}' 🤨", method)),
+        }),
+        "mem" => Some(match method {
+            "load64" | "store64" | "load8" | "store8" => {
+                Err("Obo: mem operations require native compilation — use 'obo build' 🔧".into())
+            }
+            _ => Err(format!("Obo: mem doesn't have '{}' 🤨", method)),
         }),
         _ => None,
     }

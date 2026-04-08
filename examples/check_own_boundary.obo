@@ -1,0 +1,5 @@
+// Test own rejected outside metal
+function main() {
+    buffer = own pointer.alloc(4096);
+    show buffer;
+}

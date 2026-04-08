@@ -49,6 +49,37 @@ static int64_t __obo_gc_alloc_count = 0;
 static int64_t __obo_gc_threshold = 256;
 static int __obo_gc_paused = 0;
 
+/* ── GCNode pool: avoid per-node malloc ── */
+#define GC_NODE_CHUNK 4096
+typedef struct GCNodeChunk {
+    struct GCNodeChunk* next;
+    GCNode nodes[GC_NODE_CHUNK];
+} GCNodeChunk;
+static GCNodeChunk* __gc_chunks = NULL;
+static int           __gc_chunk_idx = GC_NODE_CHUNK; /* force first alloc */
+static GCNode*       __gc_free_list = NULL;
+
+static GCNode* gc_node_alloc(void) {
+    if (__gc_free_list) {
+        GCNode* n = __gc_free_list;
+        __gc_free_list = n->next;
+        return n;
+    }
+    if (__gc_chunk_idx >= GC_NODE_CHUNK) {
+        GCNodeChunk* c = (GCNodeChunk*)malloc(sizeof(GCNodeChunk));
+        if (!c) return (GCNode*)malloc(sizeof(GCNode)); /* fallback */
+        c->next = __gc_chunks;
+        __gc_chunks = c;
+        __gc_chunk_idx = 0;
+    }
+    return &__gc_chunks->nodes[__gc_chunk_idx++];
+}
+
+static void gc_node_free(GCNode* n) {
+    n->next = __gc_free_list;
+    __gc_free_list = n;
+}
+
 #define GC_HT_BITS 14
 #define GC_HT_SIZE (1 << GC_HT_BITS)
 static GCNode* __obo_gc_ht[GC_HT_SIZE];
@@ -118,6 +149,21 @@ char* obo_str_concat(const char* a, const char* b) {
     }
     memcpy(out, a, la);
     memcpy(out + la, b, lb + 1);
+    obo_gc_register_impl(out, OBO_GC_STRING);
+    return out;
+}
+
+/* Fused "prefix" + int → single allocation (avoids intermediate i64_to_str) */
+char* obo_str_concat_int(const char* prefix, int64_t n) {
+    char buf[96];
+    size_t plen = prefix ? strlen(prefix) : 0;
+    if (plen + 21 > sizeof(buf)) plen = sizeof(buf) - 21; /* safety cap */
+    if (plen) memcpy(buf, prefix, plen);
+    int nlen = snprintf(buf + plen, sizeof(buf) - plen, "%lld", (long long)n);
+    size_t total = plen + (size_t)nlen;
+    char* out = (char*)malloc(total + 1);
+    if (!out) return NULL;
+    memcpy(out, buf, total + 1);
     obo_gc_register_impl(out, OBO_GC_STRING);
     return out;
 }
@@ -1075,17 +1121,21 @@ void* obo_entity_new_slotted(const char* type_name, int32_t nslots) {
         1, sizeof(OboEntitySlotted) + (size_t)nslots * sizeof(OboValue));
     if (!e) return NULL;
     e->_slotted = 1;
-    e->type_name = type_name ? strdup(type_name) : NULL;
+    e->type_name = (char*)type_name; /* borrowed — caller-owned (LLVM global) */
     e->nslots = nslots;
-    e->field_names = (char**)calloc((size_t)nslots, sizeof(char*));
+    e->field_names = NULL; /* allocated lazily on first set_field_name */
     obo_gc_register_impl(e, OBO_GC_ENTITY_SLOTTED);
     return e;
 }
 
 void obo_entity_set_field_name(void* ep, int32_t idx, const char* name) {
     OboEntitySlotted* e = (OboEntitySlotted*)ep;
-    if (!e || idx < 0 || idx >= e->nslots || !e->field_names) return;
-    e->field_names[idx] = name ? strdup(name) : NULL;
+    if (!e || idx < 0 || idx >= e->nslots) return;
+    if (!e->field_names) {
+        e->field_names = (char**)calloc((size_t)e->nslots, sizeof(char*));
+        if (!e->field_names) return;
+    }
+    e->field_names[idx] = (char*)name; /* borrowed — caller-owned (LLVM global) */
 }
 
 /* GET: returns pointer to the OboValue slot (no hash, no intern, no search) */
@@ -2832,13 +2882,8 @@ static void gc_free_object(GCNode* node) {
         }
         case OBO_GC_ENTITY_SLOTTED: {
             OboEntitySlotted* es = (OboEntitySlotted*)p;
-            if (es->type_name) free(es->type_name);
-            if (es->field_names) {
-                for (int32_t i = 0; i < es->nslots; i++) {
-                    if (es->field_names[i]) free(es->field_names[i]);
-                }
-                free(es->field_names);
-            }
+            /* type_name and field_names entries are borrowed (LLVM globals) — don't free */
+            if (es->field_names) free(es->field_names);
             for (int32_t i = 0; i < es->nslots; i++) {
                 if (es->slots[i].tag == OBO_V_STR && es->slots[i].u.str)
                     free(es->slots[i].u.str);
@@ -2880,7 +2925,7 @@ void obo_gc_collect(void) {
             *pp = node->next;
             gc_ht_remove(node);
             gc_free_object(node);
-            free(node);
+            gc_node_free(node);
             __obo_gc_alloc_count--;
         } else {
             node->mark = 0;
@@ -2894,7 +2939,7 @@ void obo_gc_resume(void) { __obo_gc_paused = 0; }
 
 static void obo_gc_register_impl(void* ptr, int kind) {
     if (!ptr) return;
-    GCNode* n = (GCNode*)malloc(sizeof(GCNode));
+    GCNode* n = gc_node_alloc();
     if (!n) return;
     n->ptr = ptr;
     n->mark = 1;
@@ -2924,7 +2969,7 @@ void obo_arena_free_all(void) {
     while (n) {
         GCNode* next = n->next;
         gc_free_object(n);
-        free(n);
+        /* don't gc_node_free — we free entire chunks below */
         n = next;
     }
     __obo_gc_head = NULL;
@@ -2932,6 +2977,16 @@ void obo_arena_free_all(void) {
     __obo_gc_root_top = 0;
     __obo_pending_tasks = NULL;
     memset(__obo_gc_ht, 0, sizeof(__obo_gc_ht));
+    /* Free all GCNode chunk memory */
+    __gc_free_list = NULL;
+    GCNodeChunk* c = __gc_chunks;
+    while (c) {
+        GCNodeChunk* next = c->next;
+        free(c);
+        c = next;
+    }
+    __gc_chunks = NULL;
+    __gc_chunk_idx = GC_NODE_CHUNK;
 }
 
 /* --- Closures --- */

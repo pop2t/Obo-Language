@@ -1,0 +1,77 @@
+// Test obo_list.obo — self-hosted list operations
+
+use obo_list;
+
+function main()
+{
+    // ── Create and basic ops ──
+    lst = rt_list_new(3);
+    show rt_list_len(lst);     // expect 3
+    show rt_list_empty(lst);   // expect 0
+
+    // Set values: [10, 20, 30]
+    rt_list_set(lst, 0, 10);
+    rt_list_set(lst, 1, 20);
+    rt_list_set(lst, 2, 30);
+
+    show rt_list_get(lst, 0);  // expect 10
+    show rt_list_get(lst, 1);  // expect 20
+    show rt_list_get(lst, 2);  // expect 30
+
+    // ── first / last ──
+    show rt_list_first(lst);   // expect 10
+    show rt_list_last(lst);    // expect 30
+
+    // ── contains / indexOf ──
+    show rt_list_contains(lst, 20);  // expect 1
+    show rt_list_contains(lst, 99);  // expect 0
+    show rt_list_indexOf(lst, 30);   // expect 2
+    show rt_list_indexOf(lst, 99);   // expect -1
+
+    // ── add (append) ──
+    lst = rt_list_add(lst, 40);
+    show rt_list_len(lst);     // expect 4
+    show rt_list_last(lst);    // expect 40
+
+    // ── add more to trigger realloc ──
+    lst = rt_list_add(lst, 50);
+    lst = rt_list_add(lst, 60);
+    lst = rt_list_add(lst, 70);
+    lst = rt_list_add(lst, 80);
+    lst = rt_list_add(lst, 90);
+    show rt_list_len(lst);     // expect 9
+    show rt_list_get(lst, 8);  // expect 90
+
+    // ── sort ──
+    unsorted = rt_list_new(5);
+    rt_list_set(unsorted, 0, 50);
+    rt_list_set(unsorted, 1, 10);
+    rt_list_set(unsorted, 2, 40);
+    rt_list_set(unsorted, 3, 20);
+    rt_list_set(unsorted, 4, 30);
+    sorted = rt_list_sort(unsorted);
+    show rt_list_get(sorted, 0);  // expect 10
+    show rt_list_get(sorted, 1);  // expect 20
+    show rt_list_get(sorted, 2);  // expect 30
+    show rt_list_get(sorted, 3);  // expect 40
+    show rt_list_get(sorted, 4);  // expect 50
+
+    // ── reversed ──
+    rev = rt_list_reversed(sorted);
+    show rt_list_get(rev, 0);  // expect 50
+    show rt_list_get(rev, 4);  // expect 10
+
+    // ── slice ──
+    sl = rt_list_slice(sorted, 1, 4);
+    show rt_list_len(sl);      // expect 3
+    show rt_list_get(sl, 0);   // expect 20
+    show rt_list_get(sl, 2);   // expect 40
+
+    // ── empty list ──
+    e = rt_list_new(0);
+    show rt_list_len(e);       // expect 0
+    show rt_list_empty(e);     // expect 1
+    show rt_list_first(e);     // expect 0
+
+    show 999;  // sentinel
+}

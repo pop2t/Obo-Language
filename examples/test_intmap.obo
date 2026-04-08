@@ -1,0 +1,21 @@
+// Test integer-keyed maps
+function main()
+{
+    m = ["a": 0];
+    m[1] = "hello";
+    m[2] = "world";
+    m[42] = 99;
+
+    show m[1];
+    show m[2];
+    show m[42];
+
+    // Mixed string + integer keys
+    mixed = ["name": "obo"];
+    mixed[0] = "zero";
+    mixed[100] = 200;
+
+    show mixed["name"];
+    show mixed[0];
+    show mixed[100];
+}

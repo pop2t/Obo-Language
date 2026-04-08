@@ -1,0 +1,10 @@
+// OBO Self-Hosted Runtime — Master import file
+// This file imports all OBO runtime modules so they compile
+// into a single LLVM IR module for linking.
+
+use obo_string;
+use obo_value;
+use obo_list;
+use obo_gc;
+use obo_map;
+use obo_entity;

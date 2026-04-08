@@ -1,0 +1,37 @@
+// 7.8 — Event loop with @export callbacks
+// Demonstrates passing @export functions as C function pointers to the event loop.
+
+bridge "c"
+{
+    function obo_event_loop_run(on_frame as pointer, on_event as pointer, ctx as pointer, fps as number);
+    function obo_event_loop_stop();
+    function obo_atomic_create(val as number) out pointer;
+    function obo_atomic_load(atom as pointer) out number;
+    function obo_atomic_add(atom as pointer, val as number) out number;
+}
+
+@export("void")
+function on_frame(ctx as pointer)
+{
+    metal
+    {
+        frame = obo_atomic_add(ctx, 1);
+        show frame;
+        if (frame >= 5)
+        {
+            show "stopping";
+            obo_event_loop_stop();
+        }
+    }
+}
+
+function main()
+{
+    show "Starting event loop (5 frames at 30fps)...";
+    metal
+    {
+        counter = obo_atomic_create(0);
+        obo_event_loop_run(on_frame, 0, counter, 30);
+    }
+    show "Event loop finished!";
+}

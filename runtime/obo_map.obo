@@ -1,0 +1,356 @@
+// OBO Self-Hosted Runtime — Hash Map (Tier 0)
+//
+// Open-addressing hash map with insertion-order linked list.
+// Port of the C runtime's OboMap.
+//
+// ── OboMap layout (40 bytes) ──
+//   0:  buckets     (i64) — pointer to MapEntry* array
+//   8:  nbuckets    (i32 at +8, but we use i64 read at +8 with mask)
+//  16:  count       (i64) — number of entries
+//  24:  order_head  (i64) — first inserted MapEntry
+//  32:  order_tail  (i64) — last inserted MapEntry
+//
+// ── MapEntry layout (48 bytes) ──
+//   0:  key         (i64) — pointer to null-terminated string
+//   8:  val.tag     (i64) — OboValue tag
+//  16:  val.payload (i64) — OboValue payload
+//  24:  next        (i64) — next in hash-bucket chain
+//  32:  order_next  (i64) — next in insertion order
+//  40:  order_prev  (i64) — prev in insertion order
+//
+// All functions take/return raw pointers (i64).
+
+use obo_string;
+
+// ── djb2 hash for a null-terminated string ──
+@export("i64")
+function rt_map_hash(s as number)
+{
+    h = 5381;
+    i = 0;
+    forever {
+        c = mem.load8(s + i);
+        if (c == 0) { stop; }
+        h = ((h << 5) + h) + c;
+        i = i + 1;
+    }
+    // Return positive hash
+    if (h < 0) { h = 0 - h; }
+    out h;
+}
+
+// ── Create a new empty map ──
+@export("i64")
+function rt_map_new()
+{
+    // 40 bytes for OboMap struct
+    m = pointer.alloc(40);
+    if (m == 0) { out 0; }
+    mem.zero(m, 40);
+    // Allocate 16 buckets (16 * 8 = 128 bytes)
+    buckets = pointer.alloc(128);
+    if (buckets == 0) { pointer.free(m); out 0; }
+    mem.zero(buckets, 128);
+    mem.store64(m, buckets);
+    mem.store32(m + 8, 16);  // nbuckets = 16
+    // count = 0, order_head = 0, order_tail = 0 (already zeroed)
+    out m;
+}
+
+// ── Length (number of entries) ──
+@export("i64")
+function rt_map_len(m as number)
+{
+    if (m == 0) { out 0; }
+    out mem.load64(m + 16);
+}
+
+// ── Internal: compute bucket index ──
+@export("i64")
+function rt_map_bucket(m as number, key as number)
+{
+    h = rt_map_hash(key);
+    nb = mem.load32(m + 8);
+    out h & (nb - 1);
+}
+
+// ── Internal: find entry by key, returns MapEntry pointer or 0 ──
+@export("i64")
+function rt_map_find(m as number, key as number)
+{
+    if (m == 0) { out 0; }
+    idx = rt_map_bucket(m, key);
+    buckets = mem.load64(m);
+    entry = mem.load64(buckets + idx * 8);
+    forever {
+        if (entry == 0) { out 0; }
+        ekey = mem.load64(entry);
+        if (rt_strcmp(ekey, key) == 0) { out entry; }
+        entry = mem.load64(entry + 24);
+    }
+}
+
+// ── Internal: resize the bucket array (double) ──
+@export("void")
+function rt_map_resize(m as number)
+{
+    old_nb = mem.load32(m + 8);
+    new_nb = old_nb * 2;
+    new_buckets = pointer.alloc(new_nb * 8);
+    if (new_buckets == 0) { out 0; }
+    mem.zero(new_buckets, new_nb * 8);
+
+    // Rehash all entries via insertion-order list
+    entry = mem.load64(m + 24);
+    forever {
+        if (entry == 0) { stop; }
+        ekey = mem.load64(entry);
+        h = rt_map_hash(ekey) & (new_nb - 1);
+        old_chain = mem.load64(new_buckets + h * 8);
+        mem.store64(entry + 24, old_chain);  // entry.next = bucket chain
+        mem.store64(new_buckets + h * 8, entry);
+        entry = mem.load64(entry + 32);  // order_next
+    }
+
+    // Free old buckets, install new
+    old_buckets = mem.load64(m);
+    pointer.free(old_buckets);
+    mem.store64(m, new_buckets);
+    mem.store32(m + 8, new_nb);
+}
+
+// ── Insert/update a key-value pair (tag + payload) ──
+@export("void")
+function rt_map_put(m as number, key as number, tag as number, payload as number)
+{
+    if (m == 0) { out 0; }
+
+    // Check if key already exists
+    existing = rt_map_find(m, key);
+    if (existing != 0) {
+        // Update: free old string value if needed
+        old_tag = mem.load64(existing + 8);
+        if (old_tag == 1) {
+            old_str = mem.load64(existing + 16);
+            if (old_str != 0) { pointer.free(old_str); }
+        }
+        mem.store64(existing + 8, tag);
+        mem.store64(existing + 16, payload);
+        out 0;
+    }
+
+    // New entry: allocate 48 bytes
+    entry = pointer.alloc(48);
+    if (entry == 0) { out 0; }
+    mem.zero(entry, 48);
+
+    // Copy key string (caller owns original)
+    mem.store64(entry, rt_strdup(key));
+    mem.store64(entry + 8, tag);
+    mem.store64(entry + 16, payload);
+
+    // Insert into bucket chain
+    idx = rt_map_bucket(m, key);
+    buckets = mem.load64(m);
+    old_chain = mem.load64(buckets + idx * 8);
+    mem.store64(entry + 24, old_chain);
+    mem.store64(buckets + idx * 8, entry);
+
+    // Append to insertion-order list
+    tail = mem.load64(m + 32);
+    mem.store64(entry + 40, tail);  // order_prev = old tail
+    mem.store64(entry + 32, 0);    // order_next = null
+    if (tail != 0) {
+        mem.store64(tail + 32, entry);  // old_tail.order_next = entry
+    } else {
+        mem.store64(m + 24, entry);     // order_head = entry (first entry)
+    }
+    mem.store64(m + 32, entry);         // order_tail = entry
+
+    // Increment count
+    cnt = mem.load64(m + 16) + 1;
+    mem.store64(m + 16, cnt);
+
+    // Check load factor: resize if count * 4 > nbuckets * 3
+    nb = mem.load32(m + 8);
+    if (cnt * 4 > nb * 3) {
+        rt_map_resize(m);
+    }
+}
+
+// ── Convenience: put i64 value ──
+@export("void")
+function rt_map_put_i64(m as number, key as number, val as number)
+{
+    rt_map_put(m, key, 0, val);
+}
+
+// ── Convenience: put string value (copies the string) ──
+@export("void")
+function rt_map_put_str(m as number, key as number, val as number)
+{
+    dup = rt_strdup(val);
+    rt_map_put(m, key, 1, dup);
+}
+
+// ── Convenience: put null ──
+@export("void")
+function rt_map_put_null(m as number, key as number)
+{
+    rt_map_put(m, key, 7, 0);
+}
+
+// ── Get a value by key → returns pointer to OboValue (tag at +0, payload at +8) ──
+// Returns entry+8 (pointing at val.tag) or 0 if not found
+@export("i64")
+function rt_map_get(m as number, key as number)
+{
+    entry = rt_map_find(m, key);
+    if (entry == 0) { out 0; }
+    out entry + 8;
+}
+
+// ── Get i64 value by key (returns 0 if not found) ──
+@export("i64")
+function rt_map_get_i64(m as number, key as number)
+{
+    entry = rt_map_find(m, key);
+    if (entry == 0) { out 0; }
+    out mem.load64(entry + 16);
+}
+
+// ── Check if key exists ──
+@export("i64")
+function rt_map_has(m as number, key as number)
+{
+    entry = rt_map_find(m, key);
+    if (entry != 0) { out 1; }
+    out 0;
+}
+
+// ── Remove a key, returns 1 if removed, 0 if not found ──
+@export("i64")
+function rt_map_remove(m as number, key as number)
+{
+    if (m == 0) { out 0; }
+
+    idx = rt_map_bucket(m, key);
+    buckets = mem.load64(m);
+    prev_addr = buckets + idx * 8;
+    entry = mem.load64(prev_addr);
+
+    forever {
+        if (entry == 0) { out 0; }
+        ekey = mem.load64(entry);
+        if (rt_strcmp(ekey, key) == 0) {
+            // Unlink from bucket chain
+            nxt = mem.load64(entry + 24);
+            mem.store64(prev_addr, nxt);
+
+            // Unlink from insertion-order list
+            oprev = mem.load64(entry + 40);
+            onext = mem.load64(entry + 32);
+            if (oprev != 0) {
+                mem.store64(oprev + 32, onext);
+            } else {
+                mem.store64(m + 24, onext);  // was head
+            }
+            if (onext != 0) {
+                mem.store64(onext + 40, oprev);
+            } else {
+                mem.store64(m + 32, oprev);  // was tail
+            }
+
+            // Free key string
+            pointer.free(ekey);
+            // Free string value if applicable
+            etag = mem.load64(entry + 8);
+            if (etag == 1) {
+                estr = mem.load64(entry + 16);
+                if (estr != 0) { pointer.free(estr); }
+            }
+            pointer.free(entry);
+
+            // Decrement count
+            cnt = mem.load64(m + 16) - 1;
+            mem.store64(m + 16, cnt);
+            out 1;
+        }
+        prev_addr = entry + 24;
+        entry = mem.load64(entry + 24);
+    }
+}
+
+// ── Get the Nth key in insertion order (0-indexed) ──
+@export("i64")
+function rt_map_key_at(m as number, idx as number)
+{
+    if (m == 0) { out 0; }
+    entry = mem.load64(m + 24);
+    i = 0;
+    forever {
+        if (entry == 0) { out 0; }
+        if (i == idx) { out mem.load64(entry); }
+        entry = mem.load64(entry + 32);
+        i = i + 1;
+    }
+}
+
+// ── Get the Nth value tag in insertion order ──
+@export("i64")
+function rt_map_val_tag_at(m as number, idx as number)
+{
+    if (m == 0) { out 0; }
+    entry = mem.load64(m + 24);
+    i = 0;
+    forever {
+        if (entry == 0) { out 0; }
+        if (i == idx) { out mem.load64(entry + 8); }
+        entry = mem.load64(entry + 32);
+        i = i + 1;
+    }
+}
+
+// ── Get the Nth value payload in insertion order ──
+@export("i64")
+function rt_map_val_at(m as number, idx as number)
+{
+    if (m == 0) { out 0; }
+    entry = mem.load64(m + 24);
+    i = 0;
+    forever {
+        if (entry == 0) { out 0; }
+        if (i == idx) { out mem.load64(entry + 16); }
+        entry = mem.load64(entry + 32);
+        i = i + 1;
+    }
+}
+
+// ── Free a map and all its entries ──
+@export("void")
+function rt_map_free(m as number)
+{
+    if (m == 0) { out 0; }
+    // Walk insertion-order list and free entries
+    entry = mem.load64(m + 24);
+    forever {
+        if (entry == 0) { stop; }
+        nxt = mem.load64(entry + 32);
+        // Free key
+        ekey = mem.load64(entry);
+        if (ekey != 0) { pointer.free(ekey); }
+        // Free string value
+        etag = mem.load64(entry + 8);
+        if (etag == 1) {
+            estr = mem.load64(entry + 16);
+            if (estr != 0) { pointer.free(estr); }
+        }
+        pointer.free(entry);
+        entry = nxt;
+    }
+    // Free buckets array
+    buckets = mem.load64(m);
+    if (buckets != 0) { pointer.free(buckets); }
+    // Free map struct
+    pointer.free(m);
+}

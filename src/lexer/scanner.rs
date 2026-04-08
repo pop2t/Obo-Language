@@ -104,6 +104,8 @@ impl Scanner {
             '<' => {
                 if self.match_char('=') {
                     self.add_token(TokenKind::LessEqual);
+                } else if self.match_char('<') {
+                    self.add_token(TokenKind::LessLess);
                 } else {
                     self.add_token(TokenKind::Less);
                 }
@@ -112,10 +114,16 @@ impl Scanner {
             '>' => {
                 if self.match_char('=') {
                     self.add_token(TokenKind::GreaterEqual);
+                } else if self.match_char('>') {
+                    self.add_token(TokenKind::GreaterGreater);
                 } else {
                     self.add_token(TokenKind::Greater);
                 }
             }
+
+            '&' => self.add_token(TokenKind::Ampersand),
+            '^' => self.add_token(TokenKind::Caret),
+            '~' => self.add_token(TokenKind::Tilde),
 
             '|' => {
                 if self.match_char('>') {

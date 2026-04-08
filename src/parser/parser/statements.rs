@@ -37,9 +37,17 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Statement::MetalBlock(body, span))
             }
+            TokenKind::KwDefer => {
+                let span = self.advance().span;
+                let body = self.parse_block()?;
+                Ok(Statement::Defer(body, span))
+            }
             TokenKind::KwByte | TokenKind::KwBits | TokenKind::KwNumber
             | TokenKind::KwDecimal | TokenKind::KwText | TokenKind::KwFlag
-            | TokenKind::KwChar => {
+            | TokenKind::KwChar
+            | TokenKind::KwI8 | TokenKind::KwI16 | TokenKind::KwI32 | TokenKind::KwI64
+            | TokenKind::KwU8 | TokenKind::KwU16 | TokenKind::KwU32 | TokenKind::KwU64
+            | TokenKind::KwF32 | TokenKind::KwF64 => {
                 // Type-first variable declaration: byte x = 100;
                 if self.peek_at_kind(1) == TokenKind::Identifier {
                     let type_tok = self.advance();

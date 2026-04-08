@@ -1,0 +1,20 @@
+// Test mem.load64 / mem.store64 / mem.load8 / mem.store8 intrinsics
+// Compile: obo build examples/native_mem_test.obo --emit-ll --no-link
+
+@export("void")
+function test_mem()
+{
+    addr = 0x1000;
+
+    // Store a 64-bit value
+    mem.store64(addr, 42);
+
+    // Load it back
+    val = mem.load64(addr);
+
+    // Store a byte
+    mem.store8(addr + 8, 255);
+
+    // Load a byte
+    byte_val = mem.load8(addr + 8);
+}

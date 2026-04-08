@@ -98,6 +98,10 @@ fn print_inst(inst: &Inst, out: &mut String) {
             let parts: Vec<String> = fields.iter().map(|(n, v)| format!("{} = {}", n, v)).collect();
             out.push_str(&format!("{} = make_entity {} {{ {} }}", dst, name, parts.join(", ")));
         }
+        Inst::MakePackedEntity(dst, name, fields) => {
+            let parts: Vec<String> = fields.iter().map(|(n, v)| format!("{} = {}", n, v)).collect();
+            out.push_str(&format!("{} = make_packed_entity {} {{ {} }}", dst, name, parts.join(", ")));
+        }
         Inst::Jump(target) => {
             out.push_str(&format!("jump {}", target));
         }
@@ -137,6 +141,13 @@ fn print_inst(inst: &Inst, out: &mut String) {
         }
         Inst::Nop => {
             out.push_str("nop");
+        }
+        Inst::InlineAsm(dst, template, constraints, inputs) => {
+            out.push_str(&format!("r{} = asm \"{}\" \"{}\"", dst.0, template, constraints));
+            for (i, op) in inputs.iter().enumerate() {
+                out.push_str(if i == 0 { " " } else { ", " });
+                out.push_str(&op.to_string());
+            }
         }
     }
 }

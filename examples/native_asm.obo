@@ -1,0 +1,8 @@
+// Inline assembly test — metal block with asm()
+function main()
+{
+  metal {
+    nop_result = asm("nop", "=r");
+    show nop_result;
+  }
+}

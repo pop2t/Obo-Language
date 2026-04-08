@@ -84,6 +84,8 @@ pub fn extern_fn_ret(name: &str) -> Option<LowType> {
             Some(LowType::I64)
         }
         "__sys_pointer_alloc" | "__sys_pointer_free" => Some(LowType::I64),
+        "__sys_mem_load64" | "__sys_mem_load8" | "__sys_mem_load32" => Some(LowType::I64),
+        "__sys_mem_store64" | "__sys_mem_store8" | "__sys_mem_store32" | "__sys_mem_copy" | "__sys_mem_zero" => Some(LowType::I64),
         // Set methods
         "obo_set_new" | "obo_set_add" | "obo_set_remove" | "obo_set_union" | "obo_set_intersect" | "obo_set_difference" => Some(LowType::List),
         "obo_set_has" => Some(LowType::Bool),
@@ -96,6 +98,23 @@ pub fn extern_fn_ret(name: &str) -> Option<LowType> {
         // Buffer methods
         "obo_buffer_new" | "obo_buffer_set" | "obo_buffer_toList" => Some(LowType::List),
         "obo_buffer_length" | "obo_buffer_get" => Some(LowType::I64),
+        // TextBuilder methods
+        "obo_textbuilder_new" | "obo_textbuilder_append" | "obo_textbuilder_appendChar"
+        | "obo_textbuilder_appendInt" | "obo_textbuilder_clear" => Some(LowType::Entity),
+        "obo_textbuilder_build" | "obo_textbuilder_toString" => Some(LowType::Str),
+        "obo_textbuilder_length" => Some(LowType::I64),
+        // Arena methods
+        "obo_arena_create" => Some(LowType::Entity),
+        "obo_arena_alloc" | "obo_arena_used" | "obo_arena_capacity"
+        | "obo_arena_read_i64" => Some(LowType::I64),
+        "obo_arena_read_f64" => Some(LowType::F64),
+        "obo_arena_reset" | "obo_arena_destroy"
+        | "obo_arena_write_i64" | "obo_arena_write_f64" => Some(LowType::I64),
+        // Integer-keyed map helpers
+        "obo_map_set_int" | "obo_map_set_int_str" | "obo_map_set_int_boxed"
+        | "obo_map_remove_int" => Some(LowType::Map),
+        "obo_map_get_int" | "obo_map_has_int" => Some(LowType::I64),
+        "obo_map_get_int_boxed" => Some(LowType::Dyn),
         // Bag methods (bag = list)
         "obo_bag_add" | "obo_bag_remove" => Some(LowType::List),
         "obo_bag_has" => Some(LowType::Bool),
@@ -208,7 +227,7 @@ fn infer_call_method_type(
             _ => ext_ret.unwrap_or(LowType::Map),
         },
         Some(LowType::Dyn) => match method {
-            "filter" | "map" | "add" | "removeAt" => LowType::Dyn,
+            "filter" | "map" | "add" | "removeAt" | "sortBy" => LowType::Dyn,
             "join" => LowType::Str,
             "contains" | "any" | "all" | "has" | "empty" | "startsWith" | "endsWith" => {
                 LowType::Bool
@@ -359,10 +378,49 @@ pub fn infer_entity_field_types(
                         }
                     }
                 }
+                // Packed entities: resolve field types from packed_layouts.
+                if let Inst::MakePackedEntity(_, type_name, _) = inst {
+                    if let Some(layout) = ir.packed_layouts.get(type_name.as_str()) {
+                        let entry = eft.entry(type_name.clone()).or_insert_with(HashMap::new);
+                        for (fname, ftype) in layout {
+                            let lt = match ftype.as_str() {
+                                "f32" | "f64" | "decimal" => LowType::F64,
+                                _ => LowType::I64,
+                            };
+                            entry.insert(fname.clone(), lt);
+                        }
+                    }
+                }
             }
         }
     }
     eft
+}
+
+/// Build a map of field_name → LowType for fields that are consistently the same
+/// concrete type (F64 or I64) across ALL entity types that define them.
+/// Used to skip redundant vtag writes in SetField.
+pub fn build_consistent_field_types(
+    ir: &IrProgram,
+    fn_ret: &HashMap<String, LowType>,
+) -> HashMap<String, LowType> {
+    let eft = infer_entity_field_types(ir, fn_ret);
+    let mut result: HashMap<String, Option<LowType>> = HashMap::new();
+    for (_entity_name, fields) in &eft {
+        for (field_name, &field_ty) in fields {
+            if !matches!(field_ty, LowType::F64 | LowType::I64) {
+                // Non-concrete → poison this field name
+                result.insert(field_name.clone(), None);
+                continue;
+            }
+            match result.get(field_name) {
+                None => { result.insert(field_name.clone(), Some(field_ty)); }
+                Some(Some(prev)) if *prev == field_ty => {} // consistent
+                _ => { result.insert(field_name.clone(), None); } // conflict
+            }
+        }
+    }
+    result.into_iter().filter_map(|(k, v)| v.map(|t| (k, t))).collect()
 }
 
 /// Infer the low-level type of each register and variable in a function.
@@ -389,6 +447,9 @@ fn infer_function_types_inner(
     // Track which entity type name a register/variable holds (e.g. "Body").
     let mut reg_entity_name: HashMap<Reg, String> = HashMap::new();
     let mut var_entity_name: HashMap<String, String> = HashMap::new();
+    // Track lists known to contain only entities of one type (for typed-array optimization).
+    let mut reg_list_entity: HashMap<Reg, String> = HashMap::new();
+    let mut var_list_entity: HashMap<String, String> = HashMap::new();
 
     for (i, p) in func.params.iter().enumerate() {
         let pt = func.param_types.get(i).copied().unwrap_or(IrParamType::I64);
@@ -419,6 +480,10 @@ fn infer_function_types_inner(
                         if let Some(ename) = reg_entity_name.get(src).cloned() {
                             reg_entity_name.insert(*r, ename);
                         }
+                        // Propagate list-element entity type through Copy.
+                        if let Some(lename) = reg_list_entity.get(src).cloned() {
+                            reg_list_entity.insert(*r, lename);
+                        }
                     }
                 }
                 Inst::BinOp(r, op, lhs, rhs) => {
@@ -426,8 +491,20 @@ fn infer_function_types_inner(
                     let ro = operand_ty(rhs, &reg_ty, &var_ty);
                     let either_f64 = lo == Some(LowType::F64) || ro == Some(LowType::F64);
                     let both_dyn = lo == Some(LowType::Dyn) && ro == Some(LowType::Dyn);
+                    // Check if both operands are the same value type
+                    let both_value_entity = if lo == Some(LowType::Entity) && ro == Some(LowType::Entity) {
+                        let lname = match lhs { Operand::Reg(r) => reg_entity_name.get(r).cloned(), _ => None };
+                        let rname = match rhs { Operand::Reg(r) => reg_entity_name.get(r).cloned(), _ => None };
+                        if let (Some(ln), Some(rn)) = (&lname, &rname) {
+                            if ln == rn && ir.value_types.contains(ln.as_str()) { Some(ln.clone()) } else { None }
+                        } else { None }
+                    } else { None };
                     let t = match op {
                         BinOp::Add => {
+                            if let Some(ref vt) = both_value_entity {
+                                reg_entity_name.insert(*r, vt.clone());
+                                LowType::Entity
+                            } else {
                             let any_str = lo == Some(LowType::Str) || ro == Some(LowType::Str);
                             let any_heap = matches!(lo, Some(LowType::List | LowType::Map | LowType::Entity))
                                 || matches!(ro, Some(LowType::List | LowType::Map | LowType::Entity));
@@ -440,9 +517,13 @@ fn infer_function_types_inner(
                             } else {
                                 LowType::I64
                             }
+                            }
                         }
                         BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                            if both_dyn { LowType::Dyn } else if either_f64 { LowType::F64 } else { LowType::I64 }
+                            if let Some(ref vt) = both_value_entity {
+                                reg_entity_name.insert(*r, vt.clone());
+                                LowType::Entity
+                            } else if both_dyn { LowType::Dyn } else if either_f64 { LowType::F64 } else { LowType::I64 }
                         }
                         BinOp::Concat => LowType::Str,
                         BinOp::Eq
@@ -453,6 +534,8 @@ fn infer_function_types_inner(
                         | BinOp::GreaterEq
                         | BinOp::And
                         | BinOp::Or => LowType::Bool,
+                        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
+                        | BinOp::Shl | BinOp::Shr => LowType::I64,
                     };
                     set_reg(&mut reg_ty, *r, t);
                 }
@@ -466,6 +549,7 @@ fn infer_function_types_inner(
                             }
                         }
                         UnaryOp::Not => LowType::Bool,
+                        UnaryOp::BitNot => LowType::I64,
                     };
                     set_reg(&mut reg_ty, *r, t);
                 }
@@ -478,6 +562,10 @@ fn infer_function_types_inner(
                     if let Some(ename) = var_entity_name.get(name).cloned() {
                         reg_entity_name.insert(*r, ename);
                     }
+                    // Propagate list-element entity type through Load.
+                    if let Some(lename) = var_list_entity.get(name).cloned() {
+                        reg_list_entity.insert(*r, lename);
+                    }
                 }
                 Inst::Store(name, op) => {
                     if let Some(t) = operand_ty(op, &reg_ty, &var_ty) {
@@ -487,6 +575,10 @@ fn infer_function_types_inner(
                     if let Operand::Reg(src) = op {
                         if let Some(ename) = reg_entity_name.get(src).cloned() {
                             var_entity_name.insert(name.clone(), ename);
+                        }
+                        // Propagate list-element entity type through Store.
+                        if let Some(lename) = reg_list_entity.get(src).cloned() {
+                            var_list_entity.insert(name.clone(), lename);
                         }
                     }
                 }
@@ -500,6 +592,23 @@ fn infer_function_types_inner(
                 }
                 Inst::CallMethod(r, obj, method, args) => {
                     let ot = operand_ty(obj, &reg_ty, &var_ty);
+                    // Value-type methods: dot returns F64, length returns I64
+                    if ot == Some(LowType::Entity) {
+                        let vt_name = if let Operand::Reg(reg) = obj {
+                            reg_entity_name.get(reg).cloned()
+                        } else { None };
+                        if let Some(ref vn) = vt_name {
+                            if ir.value_types.contains(vn.as_str()) {
+                                let t = match method.as_str() {
+                                    "dot" => LowType::F64,
+                                    "length" => LowType::I64,
+                                    _ => LowType::Entity,
+                                };
+                                set_reg(&mut reg_ty, *r, t);
+                                continue;
+                            }
+                        }
+                    }
                     let ext_ret = resolve_instance_method(ir, method, args.len())
                         .and_then(|full| fn_ret.get(full).copied());
                     let t = infer_call_method_type(ot, method, args, &reg_ty, &var_ty, ext_ret);
@@ -566,12 +675,37 @@ fn infer_function_types_inner(
                     }
                     if has_non_i64 {
                         set_reg(&mut reg_ty, *r, LowType::MixedList);
+                        // Track homogeneous entity lists for typed-array optimization.
+                        let mut common_entity: Option<String> = None;
+                        let mut all_same = true;
+                        for e in els {
+                            let et = operand_ty(e, &reg_ty, &var_ty);
+                            if et == Some(LowType::Entity) {
+                                let ename = match e { Operand::Reg(r) => reg_entity_name.get(r).cloned(), _ => None };
+                                if let Some(n) = ename {
+                                    if let Some(ref cn) = common_entity {
+                                        if &n != cn { all_same = false; break; }
+                                    } else {
+                                        common_entity = Some(n);
+                                    }
+                                } else { all_same = false; break; }
+                            } else { all_same = false; break; }
+                        }
+                        if all_same && !els.is_empty() {
+                            if let Some(name) = common_entity {
+                                reg_list_entity.insert(*r, name);
+                            }
+                        }
                     } else {
                         set_reg(&mut reg_ty, *r, LowType::List);
                     }
                 }
                 Inst::MakeMap(r, _) => set_reg(&mut reg_ty, *r, LowType::Map),
                 Inst::MakeEntity(r, name, _) => {
+                    set_reg(&mut reg_ty, *r, LowType::Entity);
+                    reg_entity_name.insert(*r, name.clone());
+                }
+                Inst::MakePackedEntity(r, name, _) => {
                     set_reg(&mut reg_ty, *r, LowType::Entity);
                     reg_entity_name.insert(*r, name.clone());
                 }
@@ -595,7 +729,8 @@ fn infer_function_types_inner(
                 | Inst::Jump(_)
                 | Inst::Branch(_, _, _)
                 | Inst::Return(_)
-                | Inst::Nop => {}
+                | Inst::Nop
+                | Inst::InlineAsm(_, _, _, _) => {}
             }
         }
     }
@@ -688,7 +823,21 @@ fn infer_function_types_inner(
                     let ot = operand_ty(obj, &reg_ty, &var_ty);
                     if ot == Some(LowType::List) {
                         set_reg(&mut reg_ty, *r, LowType::I64);
-                    } else if matches!(ot, Some(LowType::MixedList | LowType::Dyn | LowType::Entity | LowType::Map)) {
+                    } else if ot == Some(LowType::MixedList) {
+                        // Typed-array optimization: if list has known entity element type,
+                        // the indexed element is Entity (not Dyn).
+                        let list_ent = if let Operand::Reg(reg) = obj {
+                            reg_list_entity.get(reg).cloned().or_else(|| {
+                                reg_source_var.get(reg).and_then(|v| var_list_entity.get(v).cloned())
+                            })
+                        } else { None };
+                        if let Some(ename) = list_ent {
+                            set_reg(&mut reg_ty, *r, LowType::Entity);
+                            reg_entity_name.insert(*r, ename);
+                        } else {
+                            set_reg(&mut reg_ty, *r, LowType::Dyn);
+                        }
+                    } else if matches!(ot, Some(LowType::Dyn | LowType::Entity | LowType::Map)) {
                         set_reg(&mut reg_ty, *r, LowType::Dyn);
                     } else if ot == Some(LowType::Str) {
                         set_reg(&mut reg_ty, *r, LowType::Str);
@@ -711,10 +860,27 @@ fn infer_function_types_inner(
                 // refinement has had a chance to improve the receiver and argument types.
                 if let Inst::CallMethod(r, obj, method, args) = inst {
                     let ot = operand_ty(obj, &reg_ty, &var_ty);
-                    let ext_ret = resolve_instance_method(ir, method, args.len())
-                        .and_then(|full| fn_ret.get(full).copied());
-                    let t = infer_call_method_type(ot, method, args, &reg_ty, &var_ty, ext_ret);
-                    set_reg(&mut reg_ty, *r, t);
+                    // Value-type methods: dot returns F64, length returns I64
+                    let is_vt_method = if ot == Some(LowType::Entity) {
+                        if let Operand::Reg(reg) = obj {
+                            reg_entity_name.get(reg)
+                                .filter(|vn| ir.value_types.contains(vn.as_str()))
+                                .is_some()
+                        } else { false }
+                    } else { false };
+                    if is_vt_method {
+                        let t = match method.as_str() {
+                            "dot" => LowType::F64,
+                            "length" => LowType::I64,
+                            _ => LowType::Entity,
+                        };
+                        set_reg(&mut reg_ty, *r, t);
+                    } else {
+                        let ext_ret = resolve_instance_method(ir, method, args.len())
+                            .and_then(|full| fn_ret.get(full).copied());
+                        let t = infer_call_method_type(ot, method, args, &reg_ty, &var_ty, ext_ret);
+                        set_reg(&mut reg_ty, *r, t);
+                    }
                 }
                 if let Inst::MakeList(r, els) = inst {
                     let mut has_non_i64 = false;
@@ -785,11 +951,22 @@ fn infer_function_types_inner(
                                     var_ty.insert(name, LowType::Map);
                                 }
                             }
-                        } else if let Some(_full) = resolve_instance_method(ir, method, _args.len()) {
-                            if let Operand::Reg(reg) = obj {
-                                set_reg(&mut reg_ty, *reg, LowType::Entity);
-                                if let Some(name) = reg_source_var.get(reg).cloned() {
-                                    var_ty.insert(name, LowType::Entity);
+                        } else if let Some(full) = resolve_instance_method(ir, method, _args.len()) {
+                            // Only promote the receiver to Entity if the resolved method's
+                            // self param is actually an entity type (Str/Entity/Dyn).
+                            // Extension methods on primitives (number, decimal, flag) should
+                            // not override the receiver's type.
+                            let resolved_fn = ir.functions.iter().find(|f| f.name == full);
+                            let self_is_entity = resolved_fn
+                                .and_then(|f| f.param_types.first().copied())
+                                .map(|pt| matches!(pt, IrParamType::Str | IrParamType::Entity | IrParamType::Dyn))
+                                .unwrap_or(true);
+                            if self_is_entity {
+                                if let Operand::Reg(reg) = obj {
+                                    set_reg(&mut reg_ty, *reg, LowType::Entity);
+                                    if let Some(name) = reg_source_var.get(reg).cloned() {
+                                        var_ty.insert(name, LowType::Entity);
+                                    }
                                 }
                             }
                         }
@@ -816,8 +993,19 @@ fn infer_function_types_inner(
                     let ro = operand_ty(rhs, &reg_ty, &var_ty);
                     let either_f64 = lo == Some(LowType::F64) || ro == Some(LowType::F64);
                     let both_dyn = lo == Some(LowType::Dyn) && ro == Some(LowType::Dyn);
+                    // Check if both operands are the same value type
+                    let both_value_entity = if lo == Some(LowType::Entity) && ro == Some(LowType::Entity) {
+                        let lname = match lhs { Operand::Reg(r) => reg_entity_name.get(r).cloned(), _ => None };
+                        let rname = match rhs { Operand::Reg(r) => reg_entity_name.get(r).cloned(), _ => None };
+                        if let (Some(ln), Some(rn)) = (&lname, &rname) {
+                            if ln == rn && ir.value_types.contains(ln.as_str()) { Some(ln.clone()) } else { None }
+                        } else { None }
+                    } else { None };
                     let new_t = match op {
                         BinOp::Add => {
+                            if both_value_entity.is_some() {
+                                Some(LowType::Entity)
+                            } else {
                             let any_str = lo == Some(LowType::Str) || ro == Some(LowType::Str);
                             let any_heap = matches!(lo, Some(LowType::List | LowType::Map | LowType::Entity))
                                 || matches!(ro, Some(LowType::List | LowType::Map | LowType::Entity));
@@ -830,9 +1018,12 @@ fn infer_function_types_inner(
                             } else {
                                 None
                             }
+                            }
                         }
                         BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                            if both_dyn {
+                            if both_value_entity.is_some() {
+                                Some(LowType::Entity)
+                            } else if both_dyn {
                                 Some(LowType::Dyn)
                             } else if either_f64 {
                                 Some(LowType::F64)
@@ -1030,6 +1221,12 @@ fn max_reg_in_inst(inst: &Inst) -> u32 {
                 bump_max_reg(&mut m, v);
             }
         }
+        Inst::MakePackedEntity(r, _, fields) => {
+            m = m.max(r.0 + 1);
+            for (_, v) in fields {
+                bump_max_reg(&mut m, v);
+            }
+        }
         Inst::MakeClosure(r, _, caps) => {
             m = m.max(r.0 + 1);
             for c in caps { bump_max_reg(&mut m, c); }
@@ -1059,6 +1256,12 @@ fn max_reg_in_inst(inst: &Inst) -> u32 {
             }
         }
         Inst::Nop => {}
+        Inst::InlineAsm(r, _, _, ops) => {
+            m = m.max(r.0 + 1);
+            for op in ops {
+                bump_max_reg(&mut m, op);
+            }
+        }
     }
     m
 }

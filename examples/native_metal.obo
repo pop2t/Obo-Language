@@ -1,0 +1,30 @@
+/// Test metal block boundary enforcement — P0 0.2
+
+entity Position
+{
+    x;
+    y;
+}
+
+packed entity Vec2
+{
+    x as f32;
+    y as f32;
+}
+
+function main()
+{
+    // This should work — regular entity outside metal is fine
+    pos = Position { x = 10; y = 20; };
+    show pos.x;
+
+    // This should work — metal block with packed entity
+    metal
+    {
+        v = Vec2 { x = 1.5; y = 2.5; };
+        show v.x;
+        show v.y;
+    }
+
+    show "metal boundary works!";
+}

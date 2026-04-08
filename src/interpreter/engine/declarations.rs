@@ -16,6 +16,9 @@ impl Interpreter {
                 self.env.define(&f.name, Value::Function(func));
             }
             Declaration::Entity(e) => {
+                if e.is_value {
+                    self.value_types.insert(e.name.clone());
+                }
                 self.type_registry
                     .insert(e.name.clone(), TypeDef::Entity(e.clone()));
             }

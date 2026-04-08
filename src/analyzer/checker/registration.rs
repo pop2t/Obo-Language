@@ -143,6 +143,8 @@ impl Checker {
             is_deprecated: e.attributes.iter().any(|a| a.name == "deprecated"),
             is_reflectable: e.attributes.iter().any(|a| a.name == "reflectable"),
             is_serializable: e.attributes.iter().any(|a| a.name == "serializable"),
+            is_packed: e.is_packed,
+            is_value: e.is_value,
             defined_at: e.span,
         }
     }
@@ -191,6 +193,8 @@ impl Checker {
             is_deprecated: a.attributes.iter().any(|a| a.name == "deprecated"),
             is_reflectable: a.attributes.iter().any(|a| a.name == "reflectable"),
             is_serializable: a.attributes.iter().any(|a| a.name == "serializable"),
+            is_packed: false,
+            is_value: false,
             defined_at: a.span,
         }
     }
@@ -227,6 +231,8 @@ impl Checker {
             is_deprecated: false,
             is_reflectable: false,
             is_serializable: false,
+            is_packed: false,
+            is_value: false,
             defined_at: c.span,
         }
     }
@@ -254,6 +260,8 @@ impl Checker {
             is_deprecated: false,
             is_reflectable: false,
             is_serializable: false,
+            is_packed: false,
+            is_value: false,
             defined_at: t.span,
         }
     }

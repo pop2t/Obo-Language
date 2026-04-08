@@ -1,0 +1,34 @@
+/// Test Arena allocator in metal blocks
+
+function main()
+{
+    metal
+    {
+        arena = Arena(1024);
+        defer
+        {
+            arena.destroy();
+        }
+
+        show arena.capacity();
+        show arena.used();
+
+        ptr1 = arena.alloc(64);
+        show "allocated 64 bytes";
+        show arena.used();
+
+        ptr2 = arena.alloc(128);
+        show "allocated 128 bytes";
+        show arena.used();
+
+        arena.reset();
+        show "after reset:";
+        show arena.used();
+
+        ptr3 = arena.alloc(32);
+        show "allocated 32 after reset";
+        show arena.used();
+    }
+
+    show "arena destroyed, done!";
+}

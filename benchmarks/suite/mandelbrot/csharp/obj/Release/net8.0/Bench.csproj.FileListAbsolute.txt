@@ -1,0 +1,15 @@
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/bin/Release/net8.0/Bench
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/bin/Release/net8.0/Bench.deps.json
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/bin/Release/net8.0/Bench.runtimeconfig.json
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/bin/Release/net8.0/Bench.dll
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/bin/Release/net8.0/Bench.pdb
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/obj/Release/net8.0/Bench.GeneratedMSBuildEditorConfig.editorconfig
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/obj/Release/net8.0/Bench.AssemblyInfoInputs.cache
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/obj/Release/net8.0/Bench.AssemblyInfo.cs
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/obj/Release/net8.0/Bench.csproj.CoreCompileInputs.cache
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/obj/Release/net8.0/Bench.sourcelink.json
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/obj/Release/net8.0/Bench.dll
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/obj/Release/net8.0/refint/Bench.dll
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/obj/Release/net8.0/Bench.pdb
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/obj/Release/net8.0/Bench.genruntimeconfig.cache
+/Users/hamza/Documents/Obo/obo-compiler/benchmarks/suite/mandelbrot/csharp/obj/Release/net8.0/ref/Bench.dll

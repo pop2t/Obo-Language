@@ -1,0 +1,255 @@
+// OBO Self-Hosted Runtime — Entity (Tier 0)
+//
+// Port of the C runtime's OboEntity (map-based) and OboEntitySlotted.
+//
+// ── OboEntity (map-based) layout (24 bytes) ──
+//   0:  _slotted    (i32, stored as i64 for alignment) = 0
+//   8:  type_name   (i64) — pointer to string
+//  16:  fields      (i64) — pointer to OboMap
+//
+// ── OboEntitySlotted layout (32 + nslots*16 bytes) ──
+//   0:  _slotted    (i32) = 1
+//   8:  type_name   (i64)
+//  16:  nslots      (i32)
+//  24:  field_names  (i64) — pointer to char*[] array
+//  32:  slots[]     — OboValue array (16 bytes each: [tag:i64, payload:i64])
+
+use obo_string;
+use obo_map;
+
+// ── Create a new map-based entity ──
+@export("i64")
+function rt_entity_new(tname as number)
+{
+    e = pointer.alloc(24);
+    if (e == 0) { out 0; }
+    mem.zero(e, 24);
+    // _slotted = 0
+    mem.store32(e, 0);
+    // type_name = strdup(tname)
+    if (tname != 0) {
+        mem.store64(e + 8, rt_strdup(tname));
+    }
+    // fields = new map
+    fields = rt_map_new();
+    mem.store64(e + 16, fields);
+    out e;
+}
+
+// ── Create a new slotted entity ──
+@export("i64")
+function rt_entity_new_slotted(tname as number, nslots as number)
+{
+    sz = 32 + nslots * 16;
+    e = pointer.alloc(sz);
+    if (e == 0) { out 0; }
+    mem.zero(e, sz);
+    mem.store32(e, 1);           // _slotted = 1
+    mem.store64(e + 8, tname);   // type_name (borrowed, LLVM global)
+    mem.store32(e + 16, nslots);
+    // field_names = 0, slots[] = zeroed
+    out e;
+}
+
+// ── Get type name ──
+@export("i64")
+function rt_entity_type_name(e as number)
+{
+    if (e == 0) { out 0; }
+    out mem.load64(e + 8);
+}
+
+// ── Check if entity is slotted ──
+@export("i64")
+function rt_entity_is_slotted(e as number)
+{
+    if (e == 0) { out 0; }
+    out mem.load32(e);
+}
+
+// ── Map-based entity: put field (tag + payload) ──
+@export("void")
+function rt_entity_put(e as number, field as number, tag as number, payload as number)
+{
+    if (e == 0) { out 0; }
+    fields = mem.load64(e + 16);
+    if (fields == 0) { out 0; }
+    rt_map_put(fields, field, tag, payload);
+}
+
+// ── Map-based entity: put i64 field ──
+@export("void")
+function rt_entity_put_i64(e as number, field as number, val as number)
+{
+    rt_entity_put(e, field, 0, val);
+}
+
+// ── Map-based entity: put string field ──
+@export("void")
+function rt_entity_put_str(e as number, field as number, val as number)
+{
+    dup = rt_strdup(val);
+    rt_entity_put(e, field, 1, dup);
+}
+
+// ── Map-based entity: put null field ──
+@export("void")
+function rt_entity_put_null(e as number, field as number)
+{
+    rt_entity_put(e, field, 7, 0);
+}
+
+// ── Map-based entity: get field → pointer to OboValue or 0 ──
+@export("i64")
+function rt_entity_get(e as number, field as number)
+{
+    if (e == 0) { out 0; }
+    fields = mem.load64(e + 16);
+    if (fields == 0) { out 0; }
+    out rt_map_get(fields, field);
+}
+
+// ── Map-based entity: get i64 field ──
+@export("i64")
+function rt_entity_get_i64(e as number, field as number)
+{
+    if (e == 0) { out 0; }
+    fields = mem.load64(e + 16);
+    if (fields == 0) { out 0; }
+    out rt_map_get_i64(fields, field);
+}
+
+// ── Map-based entity: has field ──
+@export("i64")
+function rt_entity_has(e as number, field as number)
+{
+    if (e == 0) { out 0; }
+    fields = mem.load64(e + 16);
+    if (fields == 0) { out 0; }
+    out rt_map_has(fields, field);
+}
+
+// ── Map-based entity: field count ──
+@export("i64")
+function rt_entity_field_count(e as number)
+{
+    if (e == 0) { out 0; }
+    slotted = mem.load32(e);
+    if (slotted == 1) {
+        out mem.load32(e + 16);
+    }
+    fields = mem.load64(e + 16);
+    if (fields == 0) { out 0; }
+    out rt_map_len(fields);
+}
+
+// ── Slotted entity: set field name ──
+@export("void")
+function rt_entity_set_field_name(e as number, idx as number, name_ptr as number)
+{
+    if (e == 0) { out 0; }
+    nslots = mem.load32(e + 16);
+    if (idx < 0) { out 0; }
+    if (idx >= nslots) { out 0; }
+    fnames = mem.load64(e + 24);
+    if (fnames == 0) {
+        fnames = pointer.alloc(nslots * 8);
+        if (fnames == 0) { out 0; }
+        mem.zero(fnames, nslots * 8);
+        mem.store64(e + 24, fnames);
+    }
+    mem.store64(fnames + idx * 8, name_ptr);
+}
+
+// ── Slotted entity: get slot → pointer to OboValue ──
+@export("i64")
+function rt_entity_get_slot(e as number, idx as number)
+{
+    if (e == 0) { out 0; }
+    nslots = mem.load32(e + 16);
+    if (idx < 0) { out 0; }
+    if (idx >= nslots) { out 0; }
+    out e + 32 + idx * 16;
+}
+
+// ── Slotted entity: set slot i64 ──
+@export("void")
+function rt_entity_set_slot_i64(e as number, idx as number, val as number)
+{
+    slot = rt_entity_get_slot(e, idx);
+    if (slot == 0) { out 0; }
+    mem.store64(slot, 0);     // tag = I64
+    mem.store64(slot + 8, val);
+}
+
+// ── Slotted entity: set slot string ──
+@export("void")
+function rt_entity_set_slot_str(e as number, idx as number, val as number)
+{
+    slot = rt_entity_get_slot(e, idx);
+    if (slot == 0) { out 0; }
+    // Free old string if present
+    old_tag = mem.load64(slot);
+    if (old_tag == 1) {
+        old_str = mem.load64(slot + 8);
+        if (old_str != 0) { pointer.free(old_str); }
+    }
+    mem.store64(slot, 1);     // tag = STR
+    mem.store64(slot + 8, rt_strdup(val));
+}
+
+// ── Slotted entity: set slot null ──
+@export("void")
+function rt_entity_set_slot_null(e as number, idx as number)
+{
+    slot = rt_entity_get_slot(e, idx);
+    if (slot == 0) { out 0; }
+    mem.store64(slot, 7);     // tag = NULL
+    mem.store64(slot + 8, 0);
+}
+
+// ── Slotted entity: set slot bool ──
+@export("void")
+function rt_entity_set_slot_bool(e as number, idx as number, val as number)
+{
+    slot = rt_entity_get_slot(e, idx);
+    if (slot == 0) { out 0; }
+    mem.store64(slot, 6);     // tag = BOOL
+    mem.store64(slot + 8, val);
+}
+
+// ── Free a map-based entity ──
+@export("void")
+function rt_entity_free(e as number)
+{
+    if (e == 0) { out 0; }
+    slotted = mem.load32(e);
+    if (slotted == 0) {
+        // Free type_name
+        tname = mem.load64(e + 8);
+        if (tname != 0) { pointer.free(tname); }
+        // Free fields map
+        fields = mem.load64(e + 16);
+        if (fields != 0) { rt_map_free(fields); }
+    }
+    if (slotted == 1) {
+        // Free field_names array
+        fnames = mem.load64(e + 24);
+        if (fnames != 0) { pointer.free(fnames); }
+        // Free string slot values
+        nslots = mem.load32(e + 16);
+        j = 0;
+        forever {
+            if (j >= nslots) { stop; }
+            slot = e + 32 + j * 16;
+            stag = mem.load64(slot);
+            if (stag == 1) {
+                sstr = mem.load64(slot + 8);
+                if (sstr != 0) { pointer.free(sstr); }
+            }
+            j = j + 1;
+        }
+        // type_name is borrowed (LLVM global) — don't free
+    }
+    pointer.free(e);
+}

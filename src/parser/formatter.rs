@@ -517,6 +517,14 @@ impl Formatter {
                 self.indent -= 1;
                 self.line("}");
             }
+            Statement::Defer(body, _) => {
+                self.line("defer");
+                self.line("{");
+                self.indent += 1;
+                self.fmt_statements(body);
+                self.indent -= 1;
+                self.line("}");
+            }
             Statement::Block(stmts) => {
                 self.line("{");
                 self.indent += 1;
@@ -669,6 +677,7 @@ impl Formatter {
                 let prefix = match op {
                     UnaryOp::Neg => "-",
                     UnaryOp::Not => "not ",
+                    UnaryOp::BitNot => "~",
                 };
                 format!("{}{}", prefix, self.fmt_expr_inline(expr))
             }
@@ -768,6 +777,19 @@ impl Formatter {
 
             Expr::Pipe(left, right, _) => {
                 format!("{} |> {}", self.fmt_expr_inline(left), self.fmt_expr_inline(right))
+            }
+
+            Expr::Own(expr, _) => {
+                format!("own {}", self.fmt_expr_inline(expr))
+            }
+
+            Expr::InlineAsm(template, constraints, inputs, _) => {
+                let inp: Vec<String> = inputs.iter().map(|e| self.fmt_expr_inline(e)).collect();
+                if inp.is_empty() {
+                    format!("asm(\"{}\", \"{}\")", template, constraints)
+                } else {
+                    format!("asm(\"{}\", \"{}\", {})", template, constraints, inp.join(", "))
+                }
             }
 
             Expr::Interpolation(parts, _) => {

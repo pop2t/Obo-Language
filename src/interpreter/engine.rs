@@ -5,6 +5,7 @@ mod statements;
 mod tasks;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::parser::ast::*;
 
@@ -41,6 +42,8 @@ pub struct Interpreter {
     bridge_functions: HashMap<String, String>,
     /// When set, `emit` will execute this consumer's body with the emitted value
     generator_consumer: Option<GeneratorConsumer>,
+    /// Value type names (stack-allocated in native, component-wise ops in interpreter)
+    value_types: HashSet<String>,
 }
 
 #[allow(dead_code)]
@@ -63,6 +66,7 @@ impl Interpreter {
             next_task_id: 1,
             bridge_functions: HashMap::new(),
             generator_consumer: None,
+            value_types: HashSet::new(),
         }
     }
 

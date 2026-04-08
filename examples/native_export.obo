@@ -1,0 +1,32 @@
+// 7.7 — @export: C-compatible function pointers (callbacks)
+// Demonstrates @export functions that can be passed as C function pointers.
+
+// A simple exported callback — void return, pointer context param
+@export("void")
+function my_callback(ctx as pointer)
+{
+    show "callback fired!";
+}
+
+// An exported function that returns an i32
+@export("i32")
+function add_numbers(a as i32, b as i32)
+{
+    out a + b;
+}
+
+// An exported function with default i64 return
+@export
+function multiply(a as number, b as number)
+{
+    out a * b;
+}
+
+function main()
+{
+    // Test direct calls to @export functions
+    show "Direct calls:";
+    my_callback(0);
+    show add_numbers(10, 20);
+    show multiply(6, 7);
+}

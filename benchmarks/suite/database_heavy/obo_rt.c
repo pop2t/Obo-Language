@@ -1,3360 +1,1305 @@
-/* OBO native runtime — strings, lists, maps, entities, tagged values, stdlib hooks. */
-#include <math.h>
-#include <pthread.h>
-#include <setjmp.h>
-#include <stdint.h>
+/*
+ * OBO Self-Hosted Runtime — C Bridge
+ *
+ * Thin ABI-compatible bridge from the compiler's obo_* symbols
+ * to the self-hosted rt_* implementations compiled from OBO.
+ *
+ * This file is used when building with --runtime obo.
+ * It provides:
+ *   1. Global GC context management (wrapping ctx-based OBO GC)
+ *   2. obo_* → rt_* thin wrappers for string/list/map/entity/value
+ *   3. Math/Time/File/Convert using libc directly
+ *   4. Stubs for unimplemented subsystems (closures, tasks, etc.)
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
+#include <math.h>
+#include <stdint.h>
 #include <time.h>
+#include <unistd.h>
 
-void obo_list_print(void* p);
-void obo_map_print(void* mp);
-void obo_entity_print(void* ep);
+/* ═══════════════════════════════════════════════════════════
+ *  GC Kind constants (must match obo_gc.obo)
+ * ═══════════════════════════════════════════════════════════ */
+#define GC_STRING        0
+#define GC_LIST_I64      1
+#define GC_MAP           2
+#define GC_ENTITY        3
+#define GC_MIXED_LIST    4
+#define GC_CLOSURE       5
+#define GC_VALUE         6
+#define GC_TASK          7
+#define GC_OPAQUE        8
+#define GC_ENTITY_SLOTTED 9
 
-void obo_arena_register(void* ptr);
-/* GC kinds — set at allocation sites for transitive marking */
-#define OBO_GC_STRING 0
-#define OBO_GC_LIST_I64 1
-#define OBO_GC_MAP 2
-#define OBO_GC_ENTITY 3
-#define OBO_GC_MIXED_LIST 4
-#define OBO_GC_CLOSURE 5
-#define OBO_GC_VALUE 6
-#define OBO_GC_TASK 7
-#define OBO_GC_OPAQUE 8
-/* GC node definition (moved early so list/map realloc can update GC pointers) */
-typedef struct GCNode {
-    void* ptr;
-    uint8_t mark;
-    uint8_t kind;
-    struct GCNode* next;      /* global sweep list */
-    struct GCNode* ht_next;   /* hash-table chain  */
-} GCNode;
-static GCNode* __obo_gc_head = NULL;
-static int64_t __obo_gc_alloc_count = 0;
-static int64_t __obo_gc_threshold = 256;
-static int __obo_gc_paused = 0;
+/* ═══════════════════════════════════════════════════════════
+ *  External: OBO runtime functions (compiled from .obo)
+ * ═══════════════════════════════════════════════════════════ */
 
-#define GC_HT_BITS 14
-#define GC_HT_SIZE (1 << GC_HT_BITS)
-static GCNode* __obo_gc_ht[GC_HT_SIZE];
+/* GC */
+extern int64_t rt_gc_init(void);
+extern void    rt_gc_push_root(int64_t ctx, int64_t slot);
+extern void    rt_gc_pop_roots(int64_t ctx, int64_t n);
+extern void    rt_gc_collect(int64_t ctx);
+extern void    rt_gc_pause(int64_t ctx);
+extern void    rt_gc_resume(int64_t ctx);
+extern void    rt_gc_register(int64_t ctx, int64_t ptr, int64_t kind);
+extern void    rt_gc_free_all(int64_t ctx);
+extern void    rt_gc_destroy(int64_t ctx);
+extern int64_t rt_gc_find_node(int64_t ctx, int64_t ptr);
+extern void    rt_gc_ht_remove(int64_t ctx, int64_t node);
+extern void    rt_gc_ht_insert(int64_t ctx, int64_t node);
 
-static inline uint32_t gc_ptr_hash(void* ptr) {
-    uintptr_t x = (uintptr_t)ptr;
-    x = ((x >> 4) ^ (x >> 18)) & (GC_HT_SIZE - 1);
-    return (uint32_t)x;
+/* String */
+extern int64_t rt_strlen(int64_t s);
+extern int64_t rt_strcmp(int64_t a, int64_t b);
+extern int64_t rt_strdup(int64_t s);
+extern int64_t rt_str_concat(int64_t a, int64_t b);
+extern int64_t rt_i64_to_str(int64_t n);
+extern int64_t rt_str_truthy(int64_t s);
+extern int64_t rt_str_contains(int64_t h, int64_t n);
+extern int64_t rt_str_indexOf(int64_t h, int64_t n);
+extern int64_t rt_str_substring(int64_t s, int64_t start, int64_t end);
+extern int64_t rt_str_startsWith(int64_t s, int64_t p);
+extern int64_t rt_str_endsWith(int64_t s, int64_t p);
+extern int64_t rt_str_upper(int64_t s);
+extern int64_t rt_str_lower(int64_t s);
+extern int64_t rt_str_trim(int64_t s);
+extern int64_t rt_str_repeat(int64_t s, int64_t n);
+extern int64_t rt_str_reversed(int64_t s);
+extern int64_t rt_str_replace(int64_t s, int64_t old, int64_t new_s);
+extern int64_t rt_str_replace_all(int64_t s, int64_t old, int64_t new_s);
+
+/* List (i64 elements) */
+extern int64_t rt_list_new(int64_t len);
+extern int64_t rt_list_len(int64_t lst);
+extern int64_t rt_list_get(int64_t lst, int64_t i);
+extern void    rt_list_set(int64_t lst, int64_t i, int64_t v);
+extern int64_t rt_list_add(int64_t lst, int64_t v);
+extern int64_t rt_list_first(int64_t lst);
+extern int64_t rt_list_last(int64_t lst);
+extern int64_t rt_list_empty(int64_t lst);
+extern int64_t rt_list_contains(int64_t lst, int64_t v);
+extern int64_t rt_list_indexOf(int64_t lst, int64_t v);
+extern int64_t rt_list_sort(int64_t lst);
+extern int64_t rt_list_reversed(int64_t lst);
+extern int64_t rt_list_slice(int64_t lst, int64_t start, int64_t end);
+
+/* Map */
+extern int64_t rt_map_new(void);
+extern int64_t rt_map_len(int64_t m);
+extern void    rt_map_put_i64(int64_t m, int64_t key, int64_t val);
+extern void    rt_map_put_str(int64_t m, int64_t key, int64_t val);
+extern void    rt_map_put_null(int64_t m, int64_t key);
+extern int64_t rt_map_get(int64_t m, int64_t key);
+extern int64_t rt_map_get_i64(int64_t m, int64_t key);
+extern int64_t rt_map_has(int64_t m, int64_t key);
+extern int64_t rt_map_remove(int64_t m, int64_t key);
+extern int64_t rt_map_key_at(int64_t m, int64_t idx);
+extern int64_t rt_map_val_at(int64_t m, int64_t idx);
+extern int64_t rt_map_val_tag_at(int64_t m, int64_t idx);
+extern void    rt_map_free(int64_t m);
+extern int64_t rt_map_find(int64_t m, int64_t key);
+extern void    rt_map_put(int64_t m, int64_t key, int64_t tag, int64_t payload);
+
+/* Entity */
+extern int64_t rt_entity_new(int64_t tname);
+extern int64_t rt_entity_new_slotted(int64_t tname, int64_t nslots);
+extern int64_t rt_entity_type_name(int64_t e);
+extern int64_t rt_entity_is_slotted(int64_t e);
+extern void    rt_entity_put(int64_t e, int64_t field, int64_t tag, int64_t payload);
+extern void    rt_entity_put_i64(int64_t e, int64_t field, int64_t val);
+extern void    rt_entity_put_str(int64_t e, int64_t field, int64_t val);
+extern void    rt_entity_put_null(int64_t e, int64_t field);
+extern int64_t rt_entity_get(int64_t e, int64_t field);
+extern int64_t rt_entity_get_i64(int64_t e, int64_t field);
+extern int64_t rt_entity_has(int64_t e, int64_t field);
+extern int64_t rt_entity_field_count(int64_t e);
+extern void    rt_entity_set_field_name(int64_t e, int64_t idx, int64_t name);
+extern int64_t rt_entity_get_slot(int64_t e, int64_t idx);
+extern void    rt_entity_set_slot_i64(int64_t e, int64_t idx, int64_t val);
+extern void    rt_entity_set_slot_str(int64_t e, int64_t idx, int64_t val);
+extern void    rt_entity_set_slot_null(int64_t e, int64_t idx);
+extern void    rt_entity_set_slot_bool(int64_t e, int64_t idx, int64_t val);
+extern void    rt_entity_free(int64_t e);
+
+/* Value (boxing/unboxing) */
+extern int64_t rt_box_i64(int64_t n);
+extern int64_t rt_box_str(int64_t s);
+extern int64_t rt_box_list(int64_t lst);
+extern int64_t rt_box_map(int64_t m);
+extern int64_t rt_box_entity(int64_t e);
+extern int64_t rt_box_f64(int64_t raw);
+extern int64_t rt_box_bool(int64_t b);
+extern int64_t rt_box_null(void);
+extern int64_t rt_value_tag(int64_t v);
+extern int64_t rt_value_payload(int64_t v);
+extern int64_t rt_value_as_i64(int64_t v);
+extern int64_t rt_value_as_str(int64_t v);
+extern int64_t rt_value_truthy(int64_t v);
+extern int64_t rt_value_compare(int64_t a, int64_t b);
+extern void    rt_value_free(int64_t v);
+
+/* ═══════════════════════════════════════════════════════════
+ *  Global GC context
+ * ═══════════════════════════════════════════════════════════ */
+static int64_t __obo_gc_ctx = 0;
+
+static void __gc_ensure(void) {
+    if (!__obo_gc_ctx) __obo_gc_ctx = rt_gc_init();
 }
 
-static void gc_ht_remove(GCNode* node) {
-    uint32_t h = gc_ptr_hash(node->ptr);
-    GCNode** pp = &__obo_gc_ht[h];
-    while (*pp) {
-        if (*pp == node) { *pp = node->ht_next; return; }
-        pp = &(*pp)->ht_next;
-    }
+static void __gc_reg(int64_t ptr, int64_t kind) {
+    if (ptr && __obo_gc_ctx) rt_gc_register(__obo_gc_ctx, ptr, kind);
 }
 
-static void obo_gc_register_impl(void* ptr, int kind);
-static char* obo_gc_track_string(char* s);
+/* Update a GC-tracked pointer after realloc moves it. */
+static void __gc_update_ptr(int64_t old_ptr, int64_t new_ptr) {
+    if (!__obo_gc_ctx || old_ptr == new_ptr || !old_ptr || !new_ptr) return;
+    int64_t node = rt_gc_find_node(__obo_gc_ctx, old_ptr);
+    if (!node) return;
+    rt_gc_ht_remove(__obo_gc_ctx, node);
+    /* node layout: [ptr(0), mark_kind(8), next(16), ht_next(24)] */
+    *(int64_t *)node = new_ptr;
+    rt_gc_ht_insert(__obo_gc_ctx, node);
+}
 
-static GCNode* gc_find_node(void* ptr) {
-    uint32_t h = gc_ptr_hash(ptr);
-    for (GCNode* n = __obo_gc_ht[h]; n; n = n->ht_next) {
-        if (n->ptr == ptr) return n;
-    }
+/* ═══════════════════════════════════════════════════════════
+ *  1. GC — global wrappers
+ * ═══════════════════════════════════════════════════════════ */
+void obo_gc_push_root(void **slot) {
+    __gc_ensure();
+    rt_gc_push_root(__obo_gc_ctx, (int64_t)slot);
+}
+
+void obo_gc_push_roots_bulk(void ***slots, int64_t n) {
+    __gc_ensure();
+    for (int64_t i = 0; i < n; i++)
+        rt_gc_push_root(__obo_gc_ctx, (int64_t)slots[i]);
+}
+
+void obo_gc_pop_roots(int64_t n) {
+    if (__obo_gc_ctx) rt_gc_pop_roots(__obo_gc_ctx, n);
+}
+
+void obo_gc_collect(void) {
+    if (__obo_gc_ctx) rt_gc_collect(__obo_gc_ctx);
+}
+
+void obo_gc_pause(void) {
+    if (__obo_gc_ctx) rt_gc_pause(__obo_gc_ctx);
+}
+
+void obo_gc_resume(void) {
+    if (__obo_gc_ctx) rt_gc_resume(__obo_gc_ctx);
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  2. String operations
+ * ═══════════════════════════════════════════════════════════ */
+char *obo_str_concat(const char *a, const char *b) {
+    int64_t r = rt_str_concat((int64_t)a, (int64_t)b);
+    __gc_reg(r, GC_STRING);
+    return (char *)r;
+}
+
+char *obo_str_concat_int(const char *a, int64_t b) {
+    int64_t bs = rt_i64_to_str(b);
+    int64_t r = rt_str_concat((int64_t)a, bs);
+    /* Don't free bs — let GC handle it if needed, or it leaks (acceptable). */
+    __gc_reg(r, GC_STRING);
+    return (char *)r;
+}
+
+char *obo_i64_to_str(int64_t n) {
+    int64_t r = rt_i64_to_str(n);
+    __gc_reg(r, GC_STRING);
+    return (char *)r;
+}
+
+char *obo_f64_to_str(double d) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "%.15g", d);
+    char *r = (char *)malloc(n + 1);
+    memcpy(r, buf, n + 1);
+    __gc_reg((int64_t)r, GC_STRING);
+    return r;
+}
+
+int64_t obo_str_truthy(const char *s) {
+    return rt_str_truthy((int64_t)s);
+}
+
+char *obo_prompt(const char *msg) {
+    if (msg) printf("%s", msg);
+    char buf[4096];
+    if (!fgets(buf, sizeof(buf), stdin)) return (char *)calloc(1, 1);
+    size_t len = strlen(buf);
+    if (len && buf[len - 1] == '\n') buf[--len] = '\0';
+    char *r = (char *)malloc(len + 1);
+    memcpy(r, buf, len + 1);
+    __gc_reg((int64_t)r, GC_STRING);
+    return r;
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  Text methods (__text_*)
+ * ═══════════════════════════════════════════════════════════ */
+int64_t __text_length(const char *s) { return rt_strlen((int64_t)s); }
+int64_t __text_empty(const char *s)  { return (!s || *(const char *)s == '\0') ? 1 : 0; }
+char *__text_upper(const char *s)    { int64_t r = rt_str_upper((int64_t)s); __gc_reg(r, GC_STRING); return (char *)r; }
+char *__text_lower(const char *s)    { int64_t r = rt_str_lower((int64_t)s); __gc_reg(r, GC_STRING); return (char *)r; }
+char *__text_trim(const char *s)     { int64_t r = rt_str_trim((int64_t)s); __gc_reg(r, GC_STRING); return (char *)r; }
+char *__text_trimStart(const char *s) { return __text_trim(s); }  /* simplified */
+char *__text_trimEnd(const char *s)  { return __text_trim(s); }  /* simplified */
+char *__text_reversed(const char *s) { int64_t r = rt_str_reversed((int64_t)s); __gc_reg(r, GC_STRING); return (char *)r; }
+int64_t __text_contains(const char *h, const char *n) { return rt_str_contains((int64_t)h, (int64_t)n); }
+int64_t __text_startsWith(const char *s, const char *p) { return rt_str_startsWith((int64_t)s, (int64_t)p); }
+int64_t __text_endsWith(const char *s, const char *p) { return rt_str_endsWith((int64_t)s, (int64_t)p); }
+int64_t __text_indexOf(const char *h, const char *n) { return rt_str_indexOf((int64_t)h, (int64_t)n); }
+char *__text_replace(const char *s, const char *o, const char *n) {
+    int64_t r = rt_str_replace_all((int64_t)s, (int64_t)o, (int64_t)n);
+    __gc_reg(r, GC_STRING);
+    return (char *)r;
+}
+char *__text_substring(const char *s, int64_t start, int64_t end) {
+    int64_t r = rt_str_substring((int64_t)s, start, end);
+    __gc_reg(r, GC_STRING);
+    return (char *)r;
+}
+char *__text_repeat(const char *s, int64_t n) {
+    int64_t r = rt_str_repeat((int64_t)s, n);
+    __gc_reg(r, GC_STRING);
+    return (char *)r;
+}
+char *__text_padLeft(const char *s, int64_t len, const char *pad) {
+    int64_t slen = rt_strlen((int64_t)s);
+    if (slen >= len) return (char *)rt_strdup((int64_t)s);
+    int64_t need = len - slen;
+    char *r = (char *)malloc(len + 1);
+    int64_t plen = rt_strlen((int64_t)pad);
+    if (plen == 0) plen = 1;
+    for (int64_t i = 0; i < need; i++) r[i] = pad ? ((const char *)pad)[i % plen] : ' ';
+    memcpy(r + need, s, slen + 1);
+    __gc_reg((int64_t)r, GC_STRING);
+    return r;
+}
+char *__text_padRight(const char *s, int64_t len, const char *pad) {
+    int64_t slen = rt_strlen((int64_t)s);
+    if (slen >= len) return (char *)rt_strdup((int64_t)s);
+    int64_t need = len - slen;
+    char *r = (char *)malloc(len + 1);
+    memcpy(r, s, slen);
+    int64_t plen = rt_strlen((int64_t)pad);
+    if (plen == 0) plen = 1;
+    for (int64_t i = 0; i < need; i++) r[slen + i] = pad ? ((const char *)pad)[i % plen] : ' ';
+    r[len] = '\0';
+    __gc_reg((int64_t)r, GC_STRING);
+    return r;
+}
+int64_t __text_toNumber(const char *s) { return s ? atoll(s) : 0; }
+double __text_toDecimal(const char *s) { return s ? atof(s) : 0.0; }
+void *__text_split(const char *s, const char *delim) {
+    /* Returns a mixed list — stub: return empty list */
+    (void)s; (void)delim;
     return NULL;
 }
 
-/* --- String interning (small fixed table for hot field names) --- */
-#define INTERN_HT_BITS 10
-#define INTERN_HT_SIZE (1 << INTERN_HT_BITS)
-typedef struct InternEntry {
-    char* str;
-    struct InternEntry* next;
-} InternEntry;
-static InternEntry* __intern_ht[INTERN_HT_SIZE];
+/* ═══════════════════════════════════════════════════════════
+ *  3. Print helpers
+ * ═══════════════════════════════════════════════════════════ */
+void obo_print_bool(int64_t b) { printf("%s\n", b ? "true" : "false"); }
+void obo_print_double(double d) { printf("%.15g\n", d); }
 
-static uint32_t intern_hash(const char* s) {
-    uint32_t h = 5381;
-    while (*s) h = ((h << 5) + h) + (unsigned char)*s++;
-    return h & (INTERN_HT_SIZE - 1);
+/* ═══════════════════════════════════════════════════════════
+ *  4. List operations — inline layout matching C runtime
+ *     Layout: [len(i64), cap(i64), items[](i64 each)]
+ *     This matches the emitter's for-in loop which reads items
+ *     inline starting at offset 16.
+ * ═══════════════════════════════════════════════════════════ */
+typedef struct { int64_t len; int64_t cap; int64_t items[]; } IList;
+
+static IList *ilist_alloc(int64_t cap) {
+    if (cap < 4) cap = 4;
+    IList *l = (IList *)malloc(sizeof(IList) + cap * sizeof(int64_t));
+    l->len = 0;
+    l->cap = cap;
+    return l;
 }
 
-/* Return the canonical interned pointer for this string.
-   If not yet interned, copies and stores it. Interned strings are never freed. */
-static const char* obo_intern(const char* s) {
-    if (!s) return NULL;
-    uint32_t h = intern_hash(s);
-    for (InternEntry* e = __intern_ht[h]; e; e = e->next) {
-        if (e->str == s || strcmp(e->str, s) == 0) return e->str;
+/* Grow the list, updating GC tracking if pointer moves */
+static IList *ilist_grow(IList *l, int64_t new_cap) {
+    IList *nl = (IList *)realloc(l, sizeof(IList) + new_cap * sizeof(int64_t));
+    __gc_update_ptr((int64_t)l, (int64_t)nl);
+    nl->cap = new_cap;
+    return nl;
+}
+
+void *obo_list_new_i64(int64_t len, int64_t *elems) {
+    int64_t cap = len < 4 ? 4 : len;
+    IList *l = ilist_alloc(cap);
+    for (int64_t i = 0; i < len; i++) l->items[i] = elems[i];
+    l->len = len;
+    __gc_reg((int64_t)l, GC_LIST_I64);
+    return (void *)l;
+}
+
+int64_t obo_list_len(void *lst)  { return lst ? ((IList *)lst)->len : 0; }
+
+int64_t obo_list_get(void *lst, int64_t i) {
+    IList *l = (IList *)lst;
+    if (!l || i < 0 || i >= l->len) return 0;
+    return l->items[i];
+}
+
+void obo_list_set_i64(void *lst, int64_t i, int64_t v) {
+    IList *l = (IList *)lst;
+    if (!l || i < 0 || i >= l->len) return;
+    l->items[i] = v;
+}
+
+void *obo_list_add(void *lst, int64_t v) {
+    IList *l = (IList *)lst;
+    if (!l) { l = ilist_alloc(4); __gc_reg((int64_t)l, GC_LIST_I64); }
+    if (l->len >= l->cap) {
+        l = ilist_grow(l, l->cap * 2);
     }
-    InternEntry* e = (InternEntry*)malloc(sizeof(InternEntry));
-    e->str = strdup(s);
-    e->next = __intern_ht[h];
-    __intern_ht[h] = e;
-    return e->str;
+    l->items[l->len++] = v;
+    return (void *)l;
 }
 
-char* obo_str_concat(const char* a, const char* b) {
-    size_t la = strlen(a);
-    size_t lb = strlen(b);
-    char* out = (char*)malloc(la + lb + 1);
-    if (!out) {
-        return NULL;
-    }
-    memcpy(out, a, la);
-    memcpy(out + la, b, lb + 1);
-    obo_gc_register_impl(out, OBO_GC_STRING);
-    return out;
-}
+int64_t obo_list_first(void *lst) { IList *l = (IList *)lst; return (l && l->len > 0) ? l->items[0] : 0; }
+int64_t obo_list_last(void *lst)  { IList *l = (IList *)lst; return (l && l->len > 0) ? l->items[l->len - 1] : 0; }
+int64_t obo_list_empty(void *lst) { return obo_list_len(lst) == 0 ? 1 : 0; }
 
-/* Truthiness for native `and` / `or` (matches interpreter: non-empty text is true). */
-int64_t obo_str_truthy(const char* s) {
-    return (s && s[0]) ? 1 : 0;
-}
-
-void obo_print_bool(int64_t v) {
-    printf("%s\n", v ? "true" : "false");
-}
-
-/* Print message (no newline), read a line from stdin, return trimmed string. */
-char* obo_prompt(const char* message) {
-    if (message) {
-        printf("%s", message);
-        fflush(stdout);
-    }
-    char buf[4096];
-    if (!fgets(buf, sizeof(buf), stdin)) {
-        char *empty = malloc(1);
-        empty[0] = '\0';
-        return empty;
-    }
-    /* Trim trailing newline/carriage-return */
-    size_t len = strlen(buf);
-    while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r')) {
-        buf[--len] = '\0';
-    }
-    return strdup(buf);
-}
-
-/* Indirect i64(...i64) calls: fn is a native code pointer (intptr_t), argv length == argc. */
-int64_t obo_call_indirect_i64(void* fn, int64_t argc, int64_t* argv) {
-    int n = (int)argc;
-    if (!fn) {
-        return 0;
-    }
-    switch (n) {
-        case 0: {
-            typedef int64_t (*F0)(void);
-            return ((F0)fn)();
-        }
-        case 1: {
-            typedef int64_t (*F1)(int64_t);
-            return ((F1)fn)(argv[0]);
-        }
-        case 2: {
-            typedef int64_t (*F2)(int64_t, int64_t);
-            return ((F2)fn)(argv[0], argv[1]);
-        }
-        case 3: {
-            typedef int64_t (*F3)(int64_t, int64_t, int64_t);
-            return ((F3)fn)(argv[0], argv[1], argv[2]);
-        }
-        case 4: {
-            typedef int64_t (*F4)(int64_t, int64_t, int64_t, int64_t);
-            return ((F4)fn)(argv[0], argv[1], argv[2], argv[3]);
-        }
-        case 5: {
-            typedef int64_t (*F5)(int64_t, int64_t, int64_t, int64_t, int64_t);
-            return ((F5)fn)(argv[0], argv[1], argv[2], argv[3], argv[4]);
-        }
-        case 6: {
-            typedef int64_t (*F6)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
-            return ((F6)fn)(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
-        }
-        case 7: {
-            typedef int64_t (*F7)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
-            return ((F7)fn)(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
-        }
-        case 8: {
-            typedef int64_t (*F8)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
-                                  int64_t);
-            return ((F8)fn)(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7]);
-        }
-        default:
-            return 0;
-    }
-}
-
-char* obo_i64_to_str(long long n) {
-    char buf[32];
-    int len = snprintf(buf, sizeof(buf), "%lld", n);
-    if (len < 0 || len >= (int)sizeof(buf)) {
-        return NULL;
-    }
-    char* out = (char*)malloc((size_t)len + 1);
-    if (!out) {
-        return NULL;
-    }
-    memcpy(out, buf, (size_t)len + 1);
-    return obo_gc_track_string(out);
-}
-
-/* --- Tagged value (heap; opaque i8* in LLVM) --- */
-typedef enum {
-    OBO_V_I64 = 0,
-    OBO_V_STR = 1,
-    OBO_V_LIST = 2,
-    OBO_V_MAP = 3,
-    OBO_V_ENTITY = 4,
-    OBO_V_F64 = 5,
-    OBO_V_BOOL = 6,
-    OBO_V_NULL = 7,
-} OboVTag;
-
-typedef struct OboValue {
-    OboVTag tag;
-    union {
-        int64_t i64;
-        double f64;
-        char* str;
-        void* ptr;
-    } u;
-} OboValue;
-
-/* Static zero value for default / not-found returns (no allocation) */
-static OboValue __obo_zero_boxed = {OBO_V_I64, {.i64 = 0}};
-
-typedef struct OboTask {
-    void* closure;
-    pthread_t thread;
-    uint8_t joined;
-    struct OboTask* next_pending;
-} OboTask;
-
-static OboTask* __obo_pending_tasks = NULL;
-
-static char* obo_format_boxed_string(const OboValue* value);
-char* obo_format_list_string(void* list_ptr);
-char* obo_format_map_string(void* map_ptr);
-char* obo_format_entity_string(void* entity_ptr);
-static void obo_print_owned_line(char* text);
-
-static char* obo_gc_track_string(char* s) {
-    if (!s) return NULL;
-    obo_gc_register_impl(s, OBO_GC_STRING);
-    return s;
-}
-/* Circular arena for short-lived boxed values — no malloc, no GC tracking. */
-#define VALUE_ARENA_SIZE 4096
-static OboValue __value_arena[VALUE_ARENA_SIZE];
-static int __value_arena_idx = 0;
-
-static OboValue* obo_alloc_value(void) {
-    OboValue* v = &__value_arena[__value_arena_idx & (VALUE_ARENA_SIZE - 1)];
-    __value_arena_idx++;
-    /* Free old string if slot was reused */
-    if (v->tag == OBO_V_STR && v->u.str) {
-        free(v->u.str);
-    }
-    v->tag = OBO_V_NULL;
-    v->u.i64 = 0;
-    return v;
-}
-
-static OboValue* obo_value_clone(const OboValue* v) {
-    OboValue* c = obo_alloc_value();
-    if (!c) {
-        return NULL;
-    }
-    *c = *v;
-    if (v->tag == OBO_V_STR && v->u.str) {
-        c->u.str = strdup(v->u.str);
-    }
-    return c;
-}
-
-void obo_value_free(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v) {
-        return;
-    }
-    /* Arena-allocated values: don't free, they're reused */
-    if (v >= __value_arena && v < __value_arena + VALUE_ARENA_SIZE) {
-        return;
-    }
-    if (v->tag == OBO_V_STR && v->u.str) {
-        free(v->u.str);
-    }
-    /* list/map/entity owned elsewhere; shallow free of shell only */
-    free(v);
-}
-
-void obo_value_print(void* p) {
-    OboValue* v = (OboValue*)p;
-    obo_print_owned_line(obo_format_boxed_string(v));
-}
-
-int64_t obo_value_as_i64(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v) return 0;
-    switch (v->tag) {
-        case OBO_V_I64:
-        case OBO_V_BOOL:
-            return v->u.i64;
-        case OBO_V_F64:
-            return (int64_t)v->u.f64;
-        case OBO_V_NULL:
-            return 0;
-        default:
-            return 0;
-    }
-}
-
-void* obo_value_as_entity_ptr(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v || v->tag != OBO_V_ENTITY) {
-        return NULL;
-    }
-    return v->u.ptr;
-}
-
-void* obo_box_i64(int64_t n) {
-    OboValue* v = obo_alloc_value();
-    if (!v) {
-        return NULL;
-    }
-    v->tag = OBO_V_I64;
-    v->u.i64 = n;
-    return v;
-}
-
-void* obo_box_str(const char* s) {
-    OboValue* v = obo_alloc_value();
-    if (!v) return NULL;
-    v->tag = OBO_V_STR;
-    v->u.str = s ? strdup(s) : NULL;
-    return v;
-}
-
-void* obo_box_f64(double d) {
-    OboValue* v = obo_alloc_value();
-    if (!v) return NULL;
-    v->tag = OBO_V_F64;
-    v->u.f64 = d;
-    return v;
-}
-
-void* obo_box_bool(int64_t b) {
-    OboValue* v = obo_alloc_value();
-    if (!v) return NULL;
-    v->tag = OBO_V_BOOL;
-    v->u.i64 = b ? 1 : 0;
-    return v;
-}
-
-void* obo_box_null(void) {
-    OboValue* v = obo_alloc_value();
-    if (!v) return NULL;
-    v->tag = OBO_V_NULL;
-    v->u.i64 = 0;
-    return v;
-}
-
-void* obo_box_list(void* list) {
-    OboValue* v = obo_alloc_value();
-    if (!v) return NULL;
-    v->tag = OBO_V_LIST;
-    v->u.ptr = list;
-    return v;
-}
-
-void* obo_box_map(void* map) {
-    OboValue* v = obo_alloc_value();
-    if (!v) return NULL;
-    v->tag = OBO_V_MAP;
-    v->u.ptr = map;
-    return v;
-}
-
-void* obo_box_entity(void* entity) {
-    OboValue* v = obo_alloc_value();
-    if (!v) return NULL;
-    v->tag = OBO_V_ENTITY;
-    v->u.ptr = entity;
-    return v;
-}
-
-static int obo_value_is_numeric(const OboValue* v) {
-    if (!v) return 0;
-    return v->tag == OBO_V_I64 || v->tag == OBO_V_BOOL || v->tag == OBO_V_F64;
-}
-
-int64_t obo_value_compare(void* lhs_ptr, void* rhs_ptr) {
-    static const OboValue null_value = { .tag = OBO_V_NULL, .u = { .i64 = 0 } };
-    const OboValue* lhs = lhs_ptr ? (const OboValue*)lhs_ptr : &null_value;
-    const OboValue* rhs = rhs_ptr ? (const OboValue*)rhs_ptr : &null_value;
-
-    if (lhs->tag == OBO_V_NULL && rhs->tag == OBO_V_NULL) {
-        return 0;
-    }
-    if (obo_value_is_numeric(lhs) && obo_value_is_numeric(rhs)) {
-        if (lhs->tag == OBO_V_F64 || rhs->tag == OBO_V_F64) {
-            double a = lhs->tag == OBO_V_F64 ? lhs->u.f64 : (double)lhs->u.i64;
-            double b = rhs->tag == OBO_V_F64 ? rhs->u.f64 : (double)rhs->u.i64;
-            if (a < b) return -1;
-            if (a > b) return 1;
-            return 0;
-        }
-        if (lhs->u.i64 < rhs->u.i64) return -1;
-        if (lhs->u.i64 > rhs->u.i64) return 1;
-        return 0;
-    }
-    if (lhs->tag == OBO_V_STR && rhs->tag == OBO_V_STR) {
-        const char* a = lhs->u.str ? lhs->u.str : "";
-        const char* b = rhs->u.str ? rhs->u.str : "";
-        int cmp = strcmp(a, b);
-        if (cmp < 0) return -1;
-        if (cmp > 0) return 1;
-        return 0;
-    }
-    if (lhs->tag == rhs->tag) {
-        switch (lhs->tag) {
-            case OBO_V_NULL:
-                return 0;
-            case OBO_V_LIST:
-            case OBO_V_MAP:
-            case OBO_V_ENTITY:
-                if (lhs->u.ptr < rhs->u.ptr) return -1;
-                if (lhs->u.ptr > rhs->u.ptr) return 1;
-                return 0;
-            default:
-                break;
-        }
-    }
-    if (lhs->tag < rhs->tag) return -1;
-    if (lhs->tag > rhs->tag) return 1;
+int64_t obo_list_contains(void *lst, int64_t v) {
+    IList *l = (IList *)lst;
+    if (!l) return 0;
+    for (int64_t i = 0; i < l->len; i++) if (l->items[i] == v) return 1;
     return 0;
 }
 
-double obo_value_as_f64(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v) return 0.0;
-    if (v->tag == OBO_V_F64) return v->u.f64;
-    if (v->tag == OBO_V_I64) return (double)v->u.i64;
-    if (v->tag == OBO_V_BOOL) return v->u.i64 ? 1.0 : 0.0;
-    return 0.0;
+int64_t obo_list_indexOf(void *lst, int64_t v) {
+    IList *l = (IList *)lst;
+    if (!l) return -1;
+    for (int64_t i = 0; i < l->len; i++) if (l->items[i] == v) return i;
+    return -1;
 }
 
-/* Runtime arithmetic on boxed values — preserves float vs int semantics.
-   op: 0=Add, 1=Sub, 2=Mul, 3=Div, 4=Mod */
-void* obo_dyn_arith(void* a, void* b, int op) {
-    OboValue* va = (OboValue*)a;
-    OboValue* vb = (OboValue*)b;
-    if (!va || !vb) return obo_box_i64(0);
-    if (va->tag == OBO_V_F64 || vb->tag == OBO_V_F64) {
-        double fa = obo_value_as_f64(a);
-        double fb = obo_value_as_f64(b);
+void *obo_list_sort(void *lst) {
+    IList *l = (IList *)lst;
+    if (!l || l->len <= 1) return lst;
+    IList *r = ilist_alloc(l->len);
+    memcpy(r->items, l->items, l->len * sizeof(int64_t));
+    r->len = l->len;
+    for (int64_t i = 1; i < r->len; i++) {
+        int64_t key = r->items[i];
+        int64_t j = i - 1;
+        while (j >= 0 && r->items[j] > key) { r->items[j + 1] = r->items[j]; j--; }
+        r->items[j + 1] = key;
+    }
+    __gc_reg((int64_t)r, GC_LIST_I64);
+    return (void *)r;
+}
+
+void *obo_list_reverse(void *lst) {
+    IList *l = (IList *)lst;
+    if (!l) return lst;
+    IList *r = ilist_alloc(l->len);
+    for (int64_t i = 0; i < l->len; i++) r->items[i] = l->items[l->len - 1 - i];
+    r->len = l->len;
+    __gc_reg((int64_t)r, GC_LIST_I64);
+    return (void *)r;
+}
+
+void *obo_list_slice(void *lst, int64_t start, int64_t end) {
+    IList *l = (IList *)lst;
+    if (!l) return lst;
+    if (start < 0) start = 0;
+    if (end > l->len) end = l->len;
+    if (start >= end) { IList *e = ilist_alloc(4); __gc_reg((int64_t)e, GC_LIST_I64); return (void *)e; }
+    int64_t n = end - start;
+    IList *r = ilist_alloc(n);
+    memcpy(r->items, l->items + start, n * sizeof(int64_t));
+    r->len = n;
+    __gc_reg((int64_t)r, GC_LIST_I64);
+    return (void *)r;
+}
+
+void *obo_list_take(void *lst, int64_t n) { return obo_list_slice(lst, 0, n); }
+void *obo_list_skip(void *lst, int64_t n) { return obo_list_slice(lst, n, obo_list_len(lst)); }
+
+void *obo_list_remove(void *lst, int64_t val) {
+    IList *l = (IList *)lst;
+    if (!l) return lst;
+    IList *r = ilist_alloc(l->len);
+    for (int64_t i = 0; i < l->len; i++)
+        if (l->items[i] != val) r->items[r->len++] = l->items[i];
+    __gc_reg((int64_t)r, GC_LIST_I64);
+    return (void *)r;
+}
+
+void *obo_list_removeAt(void *lst, int64_t idx) {
+    IList *l = (IList *)lst;
+    if (!l) return lst;
+    IList *r = ilist_alloc(l->len);
+    for (int64_t i = 0; i < l->len; i++)
+        if (i != idx) r->items[r->len++] = l->items[i];
+    __gc_reg((int64_t)r, GC_LIST_I64);
+    return (void *)r;
+}
+
+void *obo_list_insert(void *lst, int64_t idx, int64_t val) {
+    IList *l = (IList *)lst;
+    int64_t len = l ? l->len : 0;
+    IList *r = ilist_alloc(len + 1);
+    for (int64_t i = 0; i < len; i++) {
+        if (i == idx) r->items[r->len++] = val;
+        r->items[r->len++] = l->items[i];
+    }
+    if (idx >= len) r->items[r->len++] = val;
+    __gc_reg((int64_t)r, GC_LIST_I64);
+    return (void *)r;
+}
+
+void *obo_list_distinct(void *lst) {
+    IList *l = (IList *)lst;
+    if (!l) return lst;
+    IList *r = ilist_alloc(l->len);
+    for (int64_t i = 0; i < l->len; i++) {
+        int found = 0;
+        for (int64_t j = 0; j < r->len; j++) { if (r->items[j] == l->items[i]) { found = 1; break; } }
+        if (!found) r->items[r->len++] = l->items[i];
+    }
+    __gc_reg((int64_t)r, GC_LIST_I64);
+    return (void *)r;
+}
+
+char *obo_list_join(void *lst, const char *sep) {
+    IList *l = (IList *)lst;
+    if (!l || l->len == 0) { char *r = (char *)calloc(1, 1); __gc_reg((int64_t)r, GC_STRING); return r; }
+    int64_t result = rt_i64_to_str(l->items[0]);
+    for (int64_t i = 1; i < l->len; i++) {
+        int64_t tmp = rt_str_concat(result, (int64_t)sep);
+        int64_t es = rt_i64_to_str(l->items[i]);
+        result = rt_str_concat(tmp, es);
+    }
+    __gc_reg(result, GC_STRING);
+    return (char *)result;
+}
+
+void obo_list_print(void *lst) {
+    IList *l = (IList *)lst;
+    printf("[");
+    if (l) {
+        for (int64_t i = 0; i < l->len; i++) {
+            if (i) printf(", ");
+            printf("%lld", (long long)l->items[i]);
+        }
+    }
+    printf("]\n");
+}
+
+/* Bag (alias for list) */
+void *obo_bag_add(void *lst, int64_t v) { return obo_list_add(lst, v); }
+int64_t obo_bag_has(void *lst, int64_t v) { return rt_list_contains((int64_t)lst, v); }
+void *obo_bag_remove(void *lst, int64_t v) { return obo_list_remove(lst, v); }
+
+/* ═══════════════════════════════════════════════════════════
+ *  5. Map operations
+ * ═══════════════════════════════════════════════════════════ */
+void *obo_map_new(void) {
+    int64_t m = rt_map_new();
+    __gc_reg(m, GC_MAP);
+    return (void *)m;
+}
+
+int64_t obo_map_len(void *m) { return rt_map_len((int64_t)m); }
+int64_t obo_map_empty(void *m) { return rt_map_len((int64_t)m) == 0 ? 1 : 0; }
+int64_t obo_map_has(void *m, const char *k) { return rt_map_has((int64_t)m, (int64_t)k); }
+
+void obo_map_put_i64(void *m, const char *k, int64_t v) { rt_map_put_i64((int64_t)m, (int64_t)k, v); }
+void obo_map_put_str(void *m, const char *k, const char *v) { rt_map_put_str((int64_t)m, (int64_t)k, (int64_t)v); }
+void obo_map_put_f64(void *m, const char *k, double v) {
+    int64_t bits;
+    memcpy(&bits, &v, 8);
+    rt_map_put((int64_t)m, (int64_t)k, 5, bits);  /* TAG_F64=5 */
+}
+void obo_map_put_bool(void *m, const char *k, int64_t v) {
+    rt_map_put((int64_t)m, (int64_t)k, 6, v);  /* TAG_BOOL=6 */
+}
+void obo_map_put_null(void *m, const char *k) { rt_map_put_null((int64_t)m, (int64_t)k); }
+void obo_map_put_list(void *m, const char *k, void *v)   { rt_map_put((int64_t)m, (int64_t)k, 2, (int64_t)v); }
+void obo_map_put_map(void *m, const char *k, void *v)    { rt_map_put((int64_t)m, (int64_t)k, 3, (int64_t)v); }
+void obo_map_put_entity(void *m, const char *k, void *v) { rt_map_put((int64_t)m, (int64_t)k, 4, (int64_t)v); }
+void obo_map_put_boxed(void *m, const char *k, void *v) {
+    /* v is an OboValue*: read tag+payload from it */
+    if (!v) { obo_map_put_null(m, k); return; }
+    int64_t tag = *(int64_t *)v;
+    int64_t payload = *((int64_t *)v + 1);
+    /* String values must be strdup'd — payload may be a constant */
+    if (tag == 1 && payload) { payload = rt_strdup(payload); }
+    rt_map_put((int64_t)m, (int64_t)k, tag, payload);
+}
+
+void *obo_map_get_boxed(void *m, const char *k) {
+    return (void *)rt_map_get((int64_t)m, (int64_t)k);
+}
+
+/* .set(key, val) → returns map (mutates in place) */
+void *obo_map_set(void *m, const char *k, int64_t v) {
+    rt_map_put_i64((int64_t)m, (int64_t)k, v);
+    return m;
+}
+void *obo_map_remove(void *m, const char *k) {
+    rt_map_remove((int64_t)m, (int64_t)k);
+    return m;
+}
+
+/* Integer-keyed map helpers (i64 keys → convert to string) */
+static char __int_key_buf[32];
+static char *__int_to_key(int64_t k) {
+    snprintf(__int_key_buf, sizeof(__int_key_buf), "%lld", (long long)k);
+    return __int_key_buf;
+}
+void *obo_map_set_int(void *m, int64_t k, int64_t v) { return obo_map_set(m, __int_to_key(k), v); }
+void *obo_map_set_int_str(void *m, int64_t k, const char *v) { obo_map_put_str(m, __int_to_key(k), v); return m; }
+void *obo_map_set_int_boxed(void *m, int64_t k, void *v) { obo_map_put_boxed(m, __int_to_key(k), v); return m; }
+int64_t obo_map_get_int(void *m, int64_t k) { return rt_map_get_i64((int64_t)m, (int64_t)__int_to_key(k)); }
+void *obo_map_get_int_boxed(void *m, int64_t k) { return obo_map_get_boxed(m, __int_to_key(k)); }
+int64_t obo_map_has_int(void *m, int64_t k) { return rt_map_has((int64_t)m, (int64_t)__int_to_key(k)); }
+void *obo_map_remove_int(void *m, int64_t k) { return obo_map_remove(m, __int_to_key(k)); }
+
+void obo_map_print(void *m) {
+    int64_t len = rt_map_len((int64_t)m);
+    printf("{");
+    for (int64_t i = 0; i < len; i++) {
+        if (i) printf(", ");
+        printf("\"%s\": ", (char *)rt_map_key_at((int64_t)m, i));
+        int64_t tag = rt_map_val_tag_at((int64_t)m, i);
+        int64_t val = rt_map_val_at((int64_t)m, i);
+        if (tag == 0)       printf("%lld", (long long)val);
+        else if (tag == 1)  printf("\"%s\"", (char *)val);
+        else                printf("<%lld>", (long long)tag);
+    }
+    printf("}\n");
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  6. Entity operations
+ * ═══════════════════════════════════════════════════════════ */
+void *obo_entity_new(const char *type_name) {
+    int64_t e = rt_entity_new((int64_t)type_name);
+    __gc_reg(e, GC_ENTITY);
+    return (void *)e;
+}
+
+void *obo_entity_new_slotted(const char *type_name, int32_t nslots) {
+    int64_t e = rt_entity_new_slotted((int64_t)type_name, nslots);
+    __gc_reg(e, GC_ENTITY_SLOTTED);
+    return (void *)e;
+}
+
+void obo_entity_put_i64(void *e, const char *f, int64_t v) { rt_entity_put_i64((int64_t)e, (int64_t)f, v); }
+void obo_entity_put_str(void *e, const char *f, const char *v) { rt_entity_put_str((int64_t)e, (int64_t)f, (int64_t)v); }
+void obo_entity_put_f64(void *e, const char *f, double v) {
+    int64_t bits;
+    memcpy(&bits, &v, 8);
+    rt_entity_put((int64_t)e, (int64_t)f, 5, bits);  /* TAG_F64=5 */
+}
+void obo_entity_put_bool(void *e, const char *f, int64_t v)   { rt_entity_put((int64_t)e, (int64_t)f, 6, v); }
+void obo_entity_put_null(void *e, const char *f)              { rt_entity_put_null((int64_t)e, (int64_t)f); }
+void obo_entity_put_list(void *e, const char *f, void *v)     { rt_entity_put((int64_t)e, (int64_t)f, 2, (int64_t)v); }
+void obo_entity_put_map(void *e, const char *f, void *v)      { rt_entity_put((int64_t)e, (int64_t)f, 3, (int64_t)v); }
+void obo_entity_put_entity(void *e, const char *f, void *v)   { rt_entity_put((int64_t)e, (int64_t)f, 4, (int64_t)v); }
+void obo_entity_put_boxed(void *e, const char *f, void *v) {
+    if (!v) { obo_entity_put_null(e, f); return; }
+    int64_t tag = *(int64_t *)v;
+    int64_t payload = *((int64_t *)v + 1);
+    /* String values must be strdup'd — payload may be a constant */
+    if (tag == 1 && payload) { payload = rt_strdup(payload); }
+    rt_entity_put((int64_t)e, (int64_t)f, tag, payload);
+}
+
+void *obo_entity_get_boxed(void *e, const char *f) {
+    return (void *)rt_entity_get((int64_t)e, (int64_t)f);
+}
+
+void obo_entity_print(void *e) {
+    const char *tn = (const char *)rt_entity_type_name((int64_t)e);
+    printf("%s { ... }\n", tn ? tn : "?");
+}
+
+/* Slotted entity */
+void obo_entity_set_field_name(void *e, int32_t idx, const char *name) {
+    rt_entity_set_field_name((int64_t)e, idx, (int64_t)name);
+}
+void *obo_entity_get_slot(void *e, int32_t idx) {
+    return (void *)rt_entity_get_slot((int64_t)e, idx);
+}
+void obo_entity_set_slot_i64(void *e, int32_t idx, int64_t v)  { rt_entity_set_slot_i64((int64_t)e, idx, v); }
+void obo_entity_set_slot_f64(void *e, int32_t idx, double v) {
+    int64_t bits;
+    memcpy(&bits, &v, 8);
+    /* Slot layout: [tag(i64), payload(i64)]. TAG_F64=5 */
+    int64_t slot_base = (int64_t)e + 32 + idx * 16;
+    *(int64_t *)slot_base = 5;
+    *((int64_t *)slot_base + 1) = bits;
+}
+void obo_entity_set_slot_str(void *e, int32_t idx, const char *v) { rt_entity_set_slot_str((int64_t)e, idx, (int64_t)v); }
+void obo_entity_set_slot_bool(void *e, int32_t idx, int64_t v)   { rt_entity_set_slot_bool((int64_t)e, idx, v); }
+void obo_entity_set_slot_null(void *e, int32_t idx)              { rt_entity_set_slot_null((int64_t)e, idx); }
+void obo_entity_set_slot_list(void *e, int32_t idx, void *v) {
+    int64_t slot_base = (int64_t)e + 32 + idx * 16;
+    *(int64_t *)slot_base = 2;
+    *((int64_t *)slot_base + 1) = (int64_t)v;
+}
+void obo_entity_set_slot_map(void *e, int32_t idx, void *v) {
+    int64_t slot_base = (int64_t)e + 32 + idx * 16;
+    *(int64_t *)slot_base = 3;
+    *((int64_t *)slot_base + 1) = (int64_t)v;
+}
+void obo_entity_set_slot_entity(void *e, int32_t idx, void *v) {
+    int64_t slot_base = (int64_t)e + 32 + idx * 16;
+    *(int64_t *)slot_base = 4;
+    *((int64_t *)slot_base + 1) = (int64_t)v;
+}
+void obo_entity_set_slot_boxed(void *e, int32_t idx, void *v) {
+    int64_t slot_base = (int64_t)e + 32 + idx * 16;
+    if (!v) {
+        *(int64_t *)slot_base = 0;
+        *((int64_t *)slot_base + 1) = 0;
+    } else {
+        int64_t tag = *(int64_t *)v;
+        int64_t payload = *((int64_t *)v + 1);
+        /* String payloads must be strdup'd — may be constants */
+        if (tag == 1 && payload) payload = rt_strdup(payload);
+        *(int64_t *)slot_base = tag;
+        *((int64_t *)slot_base + 1) = payload;
+    }
+}
+
+/* Hybrid get-field-or-slot */
+void *obo_entity_gfs(void *e, int32_t slot_idx, const char *field_name) {
+    if (rt_entity_is_slotted((int64_t)e))
+        return (void *)rt_entity_get_slot((int64_t)e, slot_idx);
+    return (void *)rt_entity_get((int64_t)e, (int64_t)field_name);
+}
+
+/* Hybrid set-field-or-slot */
+void obo_entity_sfs_i64(void *e, int32_t idx, const char *f, int64_t v) {
+    if (rt_entity_is_slotted((int64_t)e)) rt_entity_set_slot_i64((int64_t)e, idx, v);
+    else rt_entity_put_i64((int64_t)e, (int64_t)f, v);
+}
+void obo_entity_sfs_f64(void *e, int32_t idx, const char *f, double v) {
+    if (rt_entity_is_slotted((int64_t)e)) obo_entity_set_slot_f64(e, idx, v);
+    else obo_entity_put_f64(e, f, v);
+}
+void obo_entity_sfs_str(void *e, int32_t idx, const char *f, const char *v) {
+    if (rt_entity_is_slotted((int64_t)e)) rt_entity_set_slot_str((int64_t)e, idx, (int64_t)v);
+    else rt_entity_put_str((int64_t)e, (int64_t)f, (int64_t)v);
+}
+void obo_entity_sfs_bool(void *e, int32_t idx, const char *f, int64_t v) {
+    if (rt_entity_is_slotted((int64_t)e)) rt_entity_set_slot_bool((int64_t)e, idx, v);
+    else obo_entity_put_bool(e, f, v);
+}
+void obo_entity_sfs_null(void *e, int32_t idx, const char *f) {
+    if (rt_entity_is_slotted((int64_t)e)) rt_entity_set_slot_null((int64_t)e, idx);
+    else rt_entity_put_null((int64_t)e, (int64_t)f);
+}
+void obo_entity_sfs_list(void *e, int32_t idx, const char *f, void *v) {
+    if (rt_entity_is_slotted((int64_t)e)) obo_entity_set_slot_list(e, idx, v);
+    else obo_entity_put_list(e, f, v);
+}
+void obo_entity_sfs_map(void *e, int32_t idx, const char *f, void *v) {
+    if (rt_entity_is_slotted((int64_t)e)) obo_entity_set_slot_map(e, idx, v);
+    else obo_entity_put_map(e, f, v);
+}
+void obo_entity_sfs_entity(void *e, int32_t idx, const char *f, void *v) {
+    if (rt_entity_is_slotted((int64_t)e)) obo_entity_set_slot_entity(e, idx, v);
+    else obo_entity_put_entity(e, f, v);
+}
+void obo_entity_sfs_boxed(void *e, int32_t idx, const char *f, void *v) {
+    if (rt_entity_is_slotted((int64_t)e)) obo_entity_set_slot_boxed(e, idx, v);
+    else obo_entity_put_boxed(e, f, v);
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  7. Boxing / OboValue operations
+ * ═══════════════════════════════════════════════════════════ */
+/* OboValue layout: [tag(i64), payload(i64)] = 16 bytes */
+#define TAG_INT    0
+#define TAG_STR    1
+#define TAG_LIST   2
+#define TAG_MAP    3
+#define TAG_ENTITY 4
+#define TAG_F64    5
+#define TAG_BOOL   6
+#define TAG_NULL   7
+
+/* ── Value Arena (ring buffer) — matches C runtime's __value_arena ── */
+#define VALUE_ARENA_SIZE 4096
+typedef struct { int64_t tag; int64_t payload; } BridgeValue;
+static BridgeValue __bridge_value_arena[VALUE_ARENA_SIZE];
+static uint32_t __bridge_value_idx = 0;
+
+static void *bridge_alloc_value(int64_t tag, int64_t payload) {
+    BridgeValue *v = &__bridge_value_arena[__bridge_value_idx & (VALUE_ARENA_SIZE - 1)];
+    __bridge_value_idx++;
+    v->tag = tag;
+    v->payload = payload;
+    return (void *)v;
+}
+
+void *obo_box_i64(int64_t v)   { return bridge_alloc_value(TAG_INT, v); }
+void *obo_box_f64(double v)    {
+    int64_t bits;
+    memcpy(&bits, &v, 8);
+    return bridge_alloc_value(TAG_F64, bits);
+}
+void *obo_box_str(const char *v) { return bridge_alloc_value(TAG_STR, (int64_t)v); }
+void *obo_box_bool(int64_t v)   { return bridge_alloc_value(TAG_BOOL, v ? 1 : 0); }
+void *obo_box_null(void)        { return bridge_alloc_value(TAG_NULL, 0); }
+void *obo_box_list(void *v)     { return bridge_alloc_value(TAG_LIST, (int64_t)v); }
+void *obo_box_map(void *v)      { return bridge_alloc_value(TAG_MAP, (int64_t)v); }
+void *obo_box_entity(void *v)   { return bridge_alloc_value(TAG_ENTITY, (int64_t)v); }
+
+int64_t obo_value_as_i64(void *v) {
+    if (!v) return 0;
+    int64_t tag = *(int64_t *)v;
+    int64_t payload = *((int64_t *)v + 1);
+    if (tag == TAG_INT) return payload;
+    if (tag == TAG_F64) { double d; memcpy(&d, &payload, 8); return (int64_t)d; }
+    if (tag == TAG_BOOL) return payload;
+    return 0;
+}
+double  obo_value_as_f64(void *v) {
+    if (!v) return 0.0;
+    int64_t tag = *(int64_t *)v;
+    int64_t payload = *((int64_t *)v + 1);
+    if (tag == TAG_F64) { double d; memcpy(&d, &payload, 8); return d; }
+    if (tag == TAG_INT) return (double)payload;
+    if (tag == TAG_BOOL) return payload ? 1.0 : 0.0;
+    return 0.0;
+}
+char *obo_value_as_str(void *v) { return (char *)rt_value_as_str((int64_t)v); }
+int64_t obo_value_truthy(void *v) { return rt_value_truthy((int64_t)v); }
+int64_t obo_value_compare(void *a, void *b) { return rt_value_compare((int64_t)a, (int64_t)b); }
+
+int64_t obo_value_len(void *v) {
+    if (!v) return 0;
+    int64_t tag = *(int64_t *)v;
+    int64_t payload = *((int64_t *)v + 1);
+    if (tag == TAG_STR)    return rt_strlen(payload);
+    if (tag == TAG_LIST)   return rt_list_len(payload);
+    if (tag == TAG_MAP)    return rt_map_len(payload);
+    return 0;
+}
+
+int64_t obo_value_empty(void *v) { return obo_value_len(v) == 0 ? 1 : 0; }
+
+void *obo_value_keys(void *v) {
+    (void)v;
+    return NULL; /* stub */
+}
+
+void *obo_value_as_list_ptr(void *v) {
+    if (!v) return NULL;
+    return (void *)(*((int64_t *)v + 1));
+}
+void *obo_value_as_mixed_list_ptr(void *v) { return obo_value_as_list_ptr(v); }
+void *obo_value_as_map_ptr(void *v)        { return obo_value_as_list_ptr(v); }
+void *obo_value_as_entity_ptr(void *v)     { return obo_value_as_list_ptr(v); }
+
+char *obo_value_to_str(void *v) {
+    if (!v) { char *r = (char *)malloc(5); strcpy(r, "null"); __gc_reg((int64_t)r, GC_STRING); return r; }
+    int64_t tag = *(int64_t *)v;
+    int64_t payload = *((int64_t *)v + 1);
+    if (tag == TAG_INT)    return obo_i64_to_str(payload);
+    if (tag == TAG_STR)    return (char *)rt_strdup(payload);
+    if (tag == TAG_F64)  { double d; memcpy(&d, &payload, 8); return obo_f64_to_str(d); }
+    if (tag == TAG_BOOL)   { char *r = (char *)malloc(6); strcpy(r, payload ? "true" : "false"); __gc_reg((int64_t)r, GC_STRING); return r; }
+    if (tag == TAG_NULL)   { char *r = (char *)malloc(5); strcpy(r, "null"); __gc_reg((int64_t)r, GC_STRING); return r; }
+    return obo_i64_to_str(payload); /* fallback */
+}
+
+void obo_value_print(void *v) {
+    char *s = obo_value_to_str(v);
+    printf("%s\n", s);
+}
+
+int64_t obo_value_to_closure_arg_boxed(void *v) {
+    if (!v) return 0;
+    int64_t tag = *(int64_t *)v;
+    return *((int64_t *)v + 1);
+    (void)tag;
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  8. Math / Time / File / Convert
+ * ═══════════════════════════════════════════════════════════ */
+int64_t __sys_Math_abs(int64_t x)        { return x < 0 ? -x : x; }
+int64_t __sys_Math_floor(double x)       { return (int64_t)floor(x); }
+int64_t __sys_Math_ceil(double x)        { return (int64_t)ceil(x); }
+int64_t __sys_Math_round(double x)       { return (int64_t)round(x); }
+int64_t __sys_Math_min(int64_t a, int64_t b) { return a < b ? a : b; }
+int64_t __sys_Math_max(int64_t a, int64_t b) { return a > b ? a : b; }
+int64_t __sys_Math_sign(int64_t x)       { return (x > 0) - (x < 0); }
+int64_t __sys_Math_maxNumber(void)       { return INT64_MAX; }
+int64_t __sys_Math_minNumber(void)       { return INT64_MIN; }
+double  __sys_Math_pi(void)              { return 3.14159265358979323846; }
+double  __sys_Math_e(void)               { return 2.71828182845904523536; }
+double  __sys_Math_infinity(void)        { return 1.0 / 0.0; }
+double  __sys_Math_sqrt(double x)        { return sqrt(x); }
+double  __sys_Math_pow(double x, double y) { return pow(x, y); }
+double  __sys_Math_sin(double x)         { return sin(x); }
+double  __sys_Math_cos(double x)         { return cos(x); }
+double  __sys_Math_tan(double x)         { return tan(x); }
+double  __sys_Math_asin(double x)        { return asin(x); }
+double  __sys_Math_acos(double x)        { return acos(x); }
+double  __sys_Math_atan(double x)        { return atan(x); }
+double  __sys_Math_atan2(double y, double x) { return atan2(y, x); }
+double  __sys_Math_log(double x)         { return log(x); }
+double  __sys_Math_log10(double x)       { return log10(x); }
+double  __sys_Math_lerp(double a, double b, double t) { return a + (b - a) * t; }
+double  __sys_Math_clamp(double v, double lo, double hi) { return v < lo ? lo : v > hi ? hi : v; }
+double  __sys_Math_random(void)          { return (double)rand() / (double)RAND_MAX; }
+int64_t __sys_Math_randomInt(int64_t lo, int64_t hi) { return lo + rand() % (hi - lo + 1); }
+
+int64_t __sys_Time_now(void)         { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
+int64_t __sys_Time_nowSeconds(void)  { return time(NULL); }
+int64_t __sys_Time_sleep(int64_t ms) { usleep((useconds_t)(ms * 1000)); return 0; }
+double  __sys_Time_measure(void)     { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + ts.tv_nsec * 1e-9; }
+int64_t __sys_Time_startTimer(void)  { return __sys_Time_now(); }
+int64_t __sys_Time_stopTimer(void)   { return __sys_Time_now(); }
+
+char *__sys_File_read(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return (char *)calloc(1, 1);
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc(sz + 1);
+    fread(buf, 1, sz, f);
+    buf[sz] = '\0';
+    fclose(f);
+    __gc_reg((int64_t)buf, GC_STRING);
+    return buf;
+}
+int64_t __sys_File_write(const char *path, const char *data) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    int64_t r = fwrite(data, 1, strlen(data), f);
+    fclose(f);
+    return r;
+}
+int64_t __sys_File_append(const char *path, const char *data) {
+    FILE *f = fopen(path, "ab");
+    if (!f) return 0;
+    int64_t r = fwrite(data, 1, strlen(data), f);
+    fclose(f);
+    return r;
+}
+int64_t __sys_File_delete(const char *path) { return remove(path) == 0 ? 1 : 0; }
+int64_t __sys_File_exists(const char *path) { return access(path, F_OK) == 0 ? 1 : 0; }
+void   *__sys_File_readLines(const char *path) { (void)path; return NULL; /* stub */ }
+
+int64_t __sys_Convert_toNumber(const char *s) { return s ? atoll(s) : 0; }
+char   *__sys_Convert_toText(int64_t n)       { return obo_i64_to_str(n); }
+double  __sys_Convert_toDecimal(const char *s) { return s ? atof(s) : 0.0; }
+int64_t __sys_Convert_toFlag(int64_t v)       { return v ? 1 : 0; }
+int64_t __sys_Convert_toChar(int64_t v)       { return v; }
+
+/* pointer actor (also declared inline by emitter, but needed for fallback) */
+int64_t __sys_pointer_alloc(int64_t sz) { return (int64_t)malloc(sz); }
+int64_t __sys_pointer_free(int64_t ptr) { free((void *)ptr); return 0; }
+
+/* ═══════════════════════════════════════════════════════════
+ *  9. Closures (minimal implementation)
+ * ═══════════════════════════════════════════════════════════ */
+/* Closure layout: [fn_ptr(i64), ncaptures(i64), captures[]] */
+void *obo_closure_new(void *fn, int64_t ncap) {
+    int64_t sz = 16 + ncap * 8;
+    int64_t *c = (int64_t *)calloc(1, sz);
+    c[0] = (int64_t)fn;
+    c[1] = ncap;
+    __gc_reg((int64_t)c, GC_CLOSURE);
+    return (void *)c;
+}
+void obo_closure_set_capture(void *c, int64_t idx, int64_t val) {
+    ((int64_t *)c)[2 + idx] = val;
+}
+int64_t obo_closure_get_capture(void *c, int64_t idx) {
+    return ((int64_t *)c)[2 + idx];
+}
+
+typedef int64_t (*fn0_t)(void);
+typedef int64_t (*fn1_t)(int64_t);
+typedef int64_t (*fn2_t)(int64_t, int64_t);
+typedef int64_t (*fn3_t)(int64_t, int64_t, int64_t);
+typedef int64_t (*fn4_t)(int64_t, int64_t, int64_t, int64_t);
+
+/* Closure calling convention: fn(closure_ptr, args...) — closure is always the first argument. */
+int64_t obo_closure_call_0(void *c) { return ((fn1_t)(((int64_t *)c)[0]))((int64_t)c); }
+int64_t obo_closure_call_1(void *c, int64_t a) { return ((fn2_t)(((int64_t *)c)[0]))((int64_t)c, a); }
+int64_t obo_closure_call_2(void *c, int64_t a, int64_t b) { return ((fn3_t)(((int64_t *)c)[0]))((int64_t)c, a, b); }
+int64_t obo_closure_call_3(void *c, int64_t a, int64_t b, int64_t d) { return ((fn4_t)(((int64_t *)c)[0]))((int64_t)c, a, b, d); }
+int64_t obo_call_indirect_i64(void *fn, int64_t argc, int64_t *argv) {
+    if (argc == 0) return ((fn1_t)fn)(0);
+    if (argc == 1) return ((fn2_t)fn)(0, argv[0]);
+    if (argc == 2) return ((fn3_t)fn)(0, argv[0], argv[1]);
+    if (argc == 3) return ((fn4_t)fn)(0, argv[0], argv[1], argv[2]);
+    return 0;
+}
+
+/* HOF stubs for list filter/map/reduce/sort_by */
+void *obo_list_filter(void *lst, void *cls) {
+    IList *l = (IList *)lst;
+    if (!l) return lst;
+    IList *r = ilist_alloc(l->len);
+    for (int64_t i = 0; i < l->len; i++) {
+        if (obo_closure_call_1(cls, l->items[i])) r->items[r->len++] = l->items[i];
+    }
+    __gc_reg((int64_t)r, GC_LIST_I64);
+    return (void *)r;
+}
+void *obo_list_map(void *lst, void *cls) {
+    IList *l = (IList *)lst;
+    if (!l) return lst;
+    IList *r = ilist_alloc(l->len);
+    for (int64_t i = 0; i < l->len; i++) {
+        r->items[i] = obo_closure_call_1(cls, l->items[i]);
+    }
+    r->len = l->len;
+    __gc_reg((int64_t)r, GC_LIST_I64);
+    return (void *)r;
+}
+int64_t obo_list_reduce(void *lst, int64_t init, void *cls) {
+    IList *l = (IList *)lst;
+    int64_t acc = init;
+    if (l) for (int64_t i = 0; i < l->len; i++)
+        acc = obo_closure_call_2(cls, acc, l->items[i]);
+    return acc;
+}
+int64_t obo_list_any(void *lst, void *cls) {
+    IList *l = (IList *)lst;
+    if (l) for (int64_t i = 0; i < l->len; i++)
+        if (obo_closure_call_1(cls, l->items[i])) return 1;
+    return 0;
+}
+int64_t obo_list_all(void *lst, void *cls) {
+    IList *l = (IList *)lst;
+    if (l) for (int64_t i = 0; i < l->len; i++)
+        if (!obo_closure_call_1(cls, l->items[i])) return 0;
+    return 1;
+}
+void *obo_list_sort_by(void *lst, void *cls) {
+    IList *l = (IList *)lst;
+    if (!l || l->len <= 1) return lst;
+    IList *r = ilist_alloc(l->len);
+    memcpy(r->items, l->items, l->len * sizeof(int64_t));
+    r->len = l->len;
+    for (int64_t i = 1; i < r->len; i++) {
+        int64_t key = r->items[i];
+        int64_t j = i - 1;
+        while (j >= 0 && obo_closure_call_2(cls, r->items[j], key) > 0) {
+            r->items[j + 1] = r->items[j]; j--;
+        }
+        r->items[j + 1] = key;
+    }
+    __gc_reg((int64_t)r, GC_LIST_I64);
+    return (void *)r;
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  10. Mixed lists (stubs)
+ * ═══════════════════════════════════════════════════════════ */
+void *obo_mixed_list_new(int64_t len) {
+    /* Layout: [len(i64), cap(i64), items[](16 each)] */
+    int64_t sz = 16 + len * 16;
+    int64_t *ml = (int64_t *)calloc(1, sz);
+    ml[0] = len;
+    ml[1] = len;
+    __gc_reg((int64_t)ml, GC_MIXED_LIST);
+    return (void *)ml;
+}
+void obo_mixed_list_set(void *ml, int64_t idx, void *val) {
+    int64_t base = (int64_t)ml + 16 + idx * 16;
+    if (val) {
+        int64_t tag = *(int64_t *)val;
+        int64_t payload = *((int64_t *)val + 1);
+        /* String payloads must be strdup'd — may be constants */
+        if (tag == 1 && payload) payload = rt_strdup(payload);
+        *(int64_t *)base = tag;
+        *((int64_t *)base + 1) = payload;
+    } else {
+        *(int64_t *)base = TAG_NULL;
+        *((int64_t *)base + 1) = 0;
+    }
+}
+void *obo_mixed_list_get(void *ml, int64_t idx) {
+    return (void *)((int64_t)ml + 16 + idx * 16);
+}
+int64_t obo_mixed_list_len(void *ml) { return ml ? *(int64_t *)ml : 0; }
+void obo_mixed_list_print(void *ml) { printf("[mixed list len=%lld]\n", (long long)obo_mixed_list_len(ml)); }
+void *obo_mixed_list_filter(void *ml, void *cls) { (void)ml; (void)cls; return obo_mixed_list_new(0); }
+void *obo_mixed_list_map(void *ml, void *cls)    { (void)ml; (void)cls; return obo_mixed_list_new(0); }
+void  obo_mixed_list_each(void *ml, void *cls)   { (void)ml; (void)cls; }
+void *obo_mixed_list_add(void *ml, void *v) {
+    int64_t len = obo_mixed_list_len(ml);
+    int64_t nsz = 16 + (len + 1) * 16;
+    int64_t *newml = (int64_t *)realloc(ml, nsz);
+    __gc_update_ptr((int64_t)ml, (int64_t)newml);
+    newml[0] = len + 1;
+    newml[1] = len + 1;
+    int64_t base = (int64_t)newml + 16 + len * 16;
+    if (v) {
+        int64_t tag = *(int64_t *)v;
+        int64_t payload = *((int64_t *)v + 1);
+        /* String payloads must be strdup'd — may be constants */
+        if (tag == 1 && payload) payload = rt_strdup(payload);
+        *(int64_t *)base = tag;
+        *((int64_t *)base + 1) = payload;
+    } else {
+        *(int64_t *)base = TAG_NULL;
+        *((int64_t *)base + 1) = 0;
+    }
+    return (void *)newml;
+}
+void *obo_mixed_list_removeAt(void *ml, int64_t idx) { (void)idx; return ml; }
+char *obo_mixed_list_join(void *ml, const char *sep) { (void)ml; (void)sep; return (char *)calloc(1, 1); }
+int64_t obo_mixed_list_contains(void *ml, void *v) { (void)ml; (void)v; return 0; }
+void *obo_mixed_list_reduce(void *ml, void *init, void *cls) { (void)ml; (void)cls; return init; }
+int64_t obo_mixed_list_any(void *ml, void *cls) { (void)ml; (void)cls; return 0; }
+int64_t obo_mixed_list_all(void *ml, void *cls) { (void)ml; (void)cls; return 1; }
+void *obo_mixed_list_sort_by(void *ml, void *cls) { (void)cls; return ml; }
+
+/* Dynamic indexing — input is an OboValue* (tag+payload pair) */
+static int64_t __zero_boxed[2] = {0, 0};
+void *obo_dyn_index(void *boxed, int64_t key) {
+    if (!boxed) return (void *)__zero_boxed;
+    int64_t tag = *(int64_t *)boxed;
+    int64_t payload = *((int64_t *)boxed + 1);
+    if (tag == TAG_MAP) {
+        return obo_map_get_boxed((void *)payload, (const char *)(uintptr_t)key);
+    } else if (tag == TAG_LIST) {
+        return obo_mixed_list_get((void *)payload, key);
+    }
+    return (void *)__zero_boxed;
+}
+void *obo_dyn_index_str(void *boxed, const char *key) {
+    if (!boxed) return (void *)__zero_boxed;
+    int64_t tag = *(int64_t *)boxed;
+    int64_t payload = *((int64_t *)boxed + 1);
+    if (tag == TAG_MAP) {
+        return obo_map_get_boxed((void *)payload, key);
+    }
+    return (void *)__zero_boxed;
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  11. Misc — type check, dispatch, debug, etc.
+ * ═══════════════════════════════════════════════════════════ */
+int64_t obo_type_check(void *entity, const char *type_name) {
+    if (!entity) return 0;
+    const char *tn = (const char *)rt_entity_type_name((int64_t)entity);
+    if (!tn || !type_name) return 0;
+    return strcmp(tn, type_name) == 0 ? 1 : 0;
+}
+
+void *obo_assert_fail(const char *msg) {
+    fprintf(stderr, "Assertion failed: %s\n", msg ? msg : "(null)");
+    exit(1);
+    return NULL;
+}
+
+void *obo_reflect(void *v) { (void)v; return NULL; }
+
+int64_t obo_safe_div(int64_t a, int64_t b) { return b == 0 ? 0 : a / b; }
+int64_t obo_safe_mod(int64_t a, int64_t b) { return b == 0 ? 0 : a % b; }
+
+void *obo_range(int64_t start, int64_t end, int64_t step_val) {
+    if (step_val == 0) step_val = 1;
+    int64_t len = 0;
+    if (step_val > 0 && end > start) len = (end - start + step_val - 1) / step_val;
+    else if (step_val < 0 && start > end) len = (start - end - step_val - 1) / (-step_val);
+    IList *l = ilist_alloc(len < 4 ? 4 : len);
+    int64_t v = start;
+    for (int64_t i = 0; i < len; i++) { l->items[i] = v; v += step_val; }
+    l->len = len;
+    __gc_reg((int64_t)l, GC_LIST_I64);
+    return (void *)l;
+}
+
+char *obo_format_list_string(void *lst) {
+    IList *l = (IList *)lst;
+    int64_t len = l ? l->len : 0;
+    char *buf = (char *)malloc(len * 24 + 8);
+    int pos = 0;
+    pos += sprintf(buf + pos, "[");
+    for (int64_t i = 0; i < len; i++) {
+        if (i) pos += sprintf(buf + pos, ", ");
+        pos += sprintf(buf + pos, "%lld", (long long)l->items[i]);
+    }
+    sprintf(buf + pos, "]");
+    __gc_reg((int64_t)buf, GC_STRING);
+    return buf;
+}
+char *obo_format_map_string(void *m) {
+    char *r = (char *)malloc(16);
+    strcpy(r, "{...}");
+    __gc_reg((int64_t)r, GC_STRING);
+    return r;
+}
+char *obo_format_entity_string(void *e) {
+    const char *tn = (const char *)rt_entity_type_name((int64_t)e);
+    char *r = (char *)malloc(128);
+    snprintf(r, 128, "%s { ... }", tn ? tn : "?");
+    __gc_reg((int64_t)r, GC_STRING);
+    return r;
+}
+
+void *obo_dyn_arith(void *a, void *b, int32_t op) {
+    /* Dynamic arithmetic on OboValue* operands.
+       op: 0=add, 1=sub, 2=mul, 3=div, 4=mod */
+    if (!a || !b) return obo_box_i64(0);
+    int64_t ta = *(int64_t *)a;
+    int64_t pa = *((int64_t *)a + 1);
+    int64_t tb = *(int64_t *)b;
+    int64_t pb = *((int64_t *)b + 1);
+
+    /* If either is F64, do float arithmetic */
+    if (ta == TAG_F64 || tb == TAG_F64) {
+        double da, db;
+        if (ta == TAG_F64) memcpy(&da, &pa, 8); else da = (double)pa;
+        if (tb == TAG_F64) memcpy(&db, &pb, 8); else db = (double)pb;
         double r;
         switch (op) {
-            case 0: r = fa + fb; break;
-            case 1: r = fa - fb; break;
-            case 2: r = fa * fb; break;
-            case 3: r = fb != 0.0 ? fa / fb : 0.0; break;
-            case 4: r = fb != 0.0 ? fmod(fa, fb) : 0.0; break;
+            case 0: r = da + db; break;
+            case 1: r = da - db; break;
+            case 2: r = da * db; break;
+            case 3: r = db != 0.0 ? da / db : 0.0; break;
+            case 4: r = db != 0.0 ? fmod(da, db) : 0.0; break;
             default: r = 0.0; break;
         }
         return obo_box_f64(r);
     }
-    int64_t ia = va->u.i64;
-    int64_t ib = vb->u.i64;
+    /* Integer arithmetic */
     int64_t r;
     switch (op) {
-        case 0: r = ia + ib; break;
-        case 1: r = ia - ib; break;
-        case 2: r = ia * ib; break;
-        case 3: r = ib != 0 ? ia / ib : 0; break;
-        case 4: r = ib != 0 ? ia % ib : 0; break;
+        case 0: r = pa + pb; break;
+        case 1: r = pa - pb; break;
+        case 2: r = pa * pb; break;
+        case 3: r = pb != 0 ? pa / pb : 0; break;
+        case 4: r = pb != 0 ? pa % pb : 0; break;
         default: r = 0; break;
     }
     return obo_box_i64(r);
 }
 
-const char* obo_value_as_str(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v || v->tag != OBO_V_STR) return "";
-    return v->u.str ? v->u.str : "";
-}
-
-/* --- Mixed list (OboValue elements) --- */
-typedef struct {
-    int64_t len;
-    int64_t cap;
-    OboValue items[];
-} OboMixedList;
-
-void* obo_mixed_list_new(int64_t len) {
-    OboMixedList* l = (OboMixedList*)malloc(sizeof(OboMixedList) + (size_t)len * sizeof(OboValue));
-    if (!l) return NULL;
-    l->len = len;
-    l->cap = len;
-    memset(l->items, 0, (size_t)len * sizeof(OboValue));
-    obo_gc_register_impl(l, OBO_GC_MIXED_LIST);
-    return l;
-}
-
-void obo_mixed_list_set(void* lp, int64_t idx, void* val_ptr) {
-    OboMixedList* l = (OboMixedList*)lp;
-    if (idx >= 0 && idx < l->len && val_ptr) {
-        l->items[idx] = *(OboValue*)val_ptr;
-        /* Own a separate copy of the string so the list and the
-           source boxed value can be freed independently. */
-        if (l->items[idx].tag == OBO_V_STR && l->items[idx].u.str) {
-            l->items[idx].u.str = strdup(l->items[idx].u.str);
-        }
-    }
-}
-
-void* obo_mixed_list_get(void* lp, int64_t idx) {
-    OboMixedList* l = (OboMixedList*)lp;
-    if (!l || idx < 0 || idx >= l->len) return &__obo_zero_boxed;
-    return &l->items[idx];  /* direct pointer — no clone, no alloc */
-}
-
-int64_t obo_mixed_list_len(void* lp) {
-    OboMixedList* l = (OboMixedList*)lp;
-    return l ? l->len : 0;
-}
-
-void obo_mixed_list_print(void* lp) {
-    obo_print_owned_line(obo_format_list_string(lp));
-}
-
-/* Forward declare closure type for mixed-list higher-order functions */
-typedef int64_t (*obo_ml_closure_fn)(void*, int64_t);
-
-static int64_t obo_value_to_closure_arg(const OboValue* value) {
-    if (!value) {
-        return 0;
-    }
-    switch (value->tag) {
-        case OBO_V_I64:
-        case OBO_V_BOOL:
-            return value->u.i64;
-        case OBO_V_STR:
-            return (int64_t)(uintptr_t)(value->u.str ? value->u.str : "");
-        case OBO_V_LIST:
-        case OBO_V_MAP:
-        case OBO_V_ENTITY:
-            return (int64_t)(uintptr_t)value->u.ptr;
-        case OBO_V_F64: {
-            union {
-                double f;
-                int64_t i;
-            } bits;
-            bits.f = value->u.f64;
-            return bits.i;
-        }
-        case OBO_V_NULL:
-        default:
-            return 0;
-    }
-}
-
-int64_t obo_value_to_closure_arg_boxed(void* boxed) {
-    return obo_value_to_closure_arg((const OboValue*)boxed);
-}
-
-void* obo_mixed_list_filter(void* lp, void* cp) {
-    OboMixedList* list = (OboMixedList*)lp;
-    if (!list || !cp) return obo_mixed_list_new(0);
-    obo_ml_closure_fn fn = (obo_ml_closure_fn)(((void**)cp)[0]);
-    /* Count matches */
-    int64_t count = 0;
-    for (int64_t i = 0; i < list->len; i++) {
-        if (fn(cp, obo_value_to_closure_arg(&list->items[i])) != 0) count++;
-    }
-    OboMixedList* result = (OboMixedList*)obo_mixed_list_new(count);
-    int64_t j = 0;
-    for (int64_t i = 0; i < list->len; i++) {
-        if (fn(cp, obo_value_to_closure_arg(&list->items[i])) != 0) {
-            result->items[j] = list->items[i];
-            if (result->items[j].tag == OBO_V_STR && result->items[j].u.str)
-                result->items[j].u.str = strdup(result->items[j].u.str);
-            j++;
-        }
-    }
-    return result;
-}
-
-void* obo_mixed_list_map(void* lp, void* cp) {
-    OboMixedList* list = (OboMixedList*)lp;
-    if (!list || !cp) return obo_mixed_list_new(0);
-    obo_ml_closure_fn fn = (obo_ml_closure_fn)(((void**)cp)[0]);
-    OboMixedList* result = (OboMixedList*)obo_mixed_list_new(list->len);
-    for (int64_t i = 0; i < list->len; i++) {
-        int64_t rv = fn(cp, obo_value_to_closure_arg(&list->items[i]));
-        OboValue* rbox = obo_alloc_value();
-        rbox->tag = OBO_V_I64;
-        rbox->u.i64 = rv;
-        result->items[i] = *rbox;
-    }
-    return result;
-}
-
-void obo_mixed_list_each(void* lp, void* cp) {
-    OboMixedList* list = (OboMixedList*)lp;
-    if (!list || !cp) return;
-    obo_ml_closure_fn fn = (obo_ml_closure_fn)(((void**)cp)[0]);
-    for (int64_t i = 0; i < list->len; i++) {
-        fn(cp, obo_value_to_closure_arg(&list->items[i]));
-    }
-}
-
-void* obo_mixed_list_add(void* lp, void* val_ptr) {
-    OboMixedList* list = (OboMixedList*)lp;
-    int64_t old_len = list ? list->len : 0;
-    int64_t new_len = old_len + 1;
-
-    OboMixedList* result;
-    if (list && new_len <= list->cap) {
-        /* Fast path: capacity available, append in-place (no realloc, no GC registration) */
-        result = list;
-    } else {
-        /* Need to grow: realloc with 2× growth */
-        int64_t new_cap = new_len < 8 ? 8 : new_len * 2;
-        if (list) {
-            /* realloc in-place — no string dup needed since pointers stay valid */
-            result = (OboMixedList*)realloc(list, sizeof(OboMixedList) + (size_t)new_cap * sizeof(OboValue));
-            if (!result) return lp;
-            /* Update GC: pointer may have moved */
-            GCNode* gn = gc_find_node(list);
-            if (gn) {
-                /* Remove old pointer from hash table */
-                gc_ht_remove(gn);
-                /* Update pointer */
-                gn->ptr = result;
-                /* Re-insert into hash table with new pointer */
-                uint32_t h = gc_ptr_hash(result);
-                gn->ht_next = __obo_gc_ht[h];
-                __obo_gc_ht[h] = gn;
-            }
-            memset(result->items + old_len, 0, (size_t)(new_cap - old_len) * sizeof(OboValue));
-        } else {
-            result = (OboMixedList*)malloc(sizeof(OboMixedList) + (size_t)new_cap * sizeof(OboValue));
-            if (!result) return lp;
-            memset(result->items, 0, (size_t)new_cap * sizeof(OboValue));
-            obo_gc_register_impl(result, OBO_GC_MIXED_LIST);
-        }
-        result->cap = new_cap;
-    }
-
-    OboValue* boxed = (OboValue*)val_ptr;
-    if (boxed) {
-        result->items[old_len] = *boxed;
-        if (result->items[old_len].tag == OBO_V_STR && result->items[old_len].u.str) {
-            result->items[old_len].u.str = strdup(result->items[old_len].u.str);
-        }
-    } else {
-        result->items[old_len].tag = OBO_V_NULL;
-        result->items[old_len].u.i64 = 0;
-    }
-    result->len = new_len;
-    return result;
-}
-
-void* obo_mixed_list_removeAt(void* lp, int64_t idx) {
-    OboMixedList* list = (OboMixedList*)lp;
-    if (!list || idx < 0 || idx >= list->len) return lp;
-    int64_t new_len = list->len - 1;
-    int64_t alloc_len = new_len < 1 ? 1 : new_len;
-    OboMixedList* result = (OboMixedList*)malloc(sizeof(OboMixedList) + (size_t)alloc_len * sizeof(OboValue));
-    if (!result) return lp;
-    result->len = new_len;
-    result->cap = alloc_len;
-    if (idx > 0) memcpy(result->items, list->items, (size_t)idx * sizeof(OboValue));
-    if (idx < list->len - 1) memcpy(result->items + idx, list->items + idx + 1, (size_t)(list->len - idx - 1) * sizeof(OboValue));
-    for (int64_t i = 0; i < new_len; i++) {
-        if (result->items[i].tag == OBO_V_STR && result->items[i].u.str) {
-            result->items[i].u.str = strdup(result->items[i].u.str);
-        }
-    }
-    obo_gc_register_impl(result, OBO_GC_MIXED_LIST);
-    return result;
-}
-
-void* obo_mixed_list_join(void* lp, const char* sep) {
-    OboMixedList* list = (OboMixedList*)lp;
-    if (!list || list->len == 0) return obo_gc_track_string(strdup(""));
-    if (!sep) sep = ", ";
-    size_t slen = strlen(sep);
-    size_t cap = 256;
-    char* out = (char*)malloc(cap);
-    size_t oi = 0;
-    for (int64_t i = 0; i < list->len; i++) {
-        if (i > 0) {
-            if (oi + slen >= cap) { cap = (oi + slen) * 2 + 1; out = (char*)realloc(out, cap); }
-            memcpy(out + oi, sep, slen);
-            oi += slen;
-        }
-        const char* s = "";
-        OboValue* v = &list->items[i];
-        if (v->tag == OBO_V_STR) {
-            s = v->u.str ? v->u.str : "";
-        } else if (v->tag == OBO_V_I64) {
-            char buf[32]; snprintf(buf, sizeof(buf), "%lld", (long long)v->u.i64);
-            s = obo_gc_track_string(strdup(buf));
-        } else if (v->tag == OBO_V_F64) {
-            char buf[64]; snprintf(buf, sizeof(buf), "%g", v->u.f64);
-            s = obo_gc_track_string(strdup(buf));
-        } else if (v->tag == OBO_V_BOOL) {
-            s = v->u.i64 ? "true" : "false";
-        } else if (v->tag == OBO_V_NULL) {
-            s = "null";
-        }
-        size_t n = strlen(s);
-        if (oi + n >= cap) { cap = (oi + n) * 2 + 1; out = (char*)realloc(out, cap); }
-        memcpy(out + oi, s, n);
-        oi += n;
-    }
-    out[oi] = 0;
-    return obo_gc_track_string(out);
-}
-
-int64_t obo_mixed_list_contains(void* lp, void* val_ptr) {
-    OboMixedList* list = (OboMixedList*)lp;
-    if (!list || !val_ptr) return 0;
-    OboValue* target = (OboValue*)val_ptr;
-    for (int64_t i = 0; i < list->len; i++) {
-        OboValue* item = &list->items[i];
-        if (item->tag == target->tag) {
-            if (item->tag == OBO_V_I64 && item->u.i64 == target->u.i64) return 1;
-            if (item->tag == OBO_V_F64 && item->u.f64 == target->u.f64) return 1;
-            if (item->tag == OBO_V_STR && item->u.str && target->u.str && strcmp(item->u.str, target->u.str) == 0) return 1;
-            if (item->tag == OBO_V_BOOL && item->u.i64 == target->u.i64) return 1;
-            if (item->tag == OBO_V_NULL) return 1;
-        }
-    }
-    return 0;
-}
-
-void* obo_mixed_list_reduce(void* lp, void* init_ptr, void* cp) {
-    OboMixedList* list = (OboMixedList*)lp;
-    if (!list || !cp) return init_ptr;
-    typedef int64_t (*reduce_fn)(void*, int64_t, int64_t);
-    reduce_fn fn = (reduce_fn)(((void**)cp)[0]);
-    int64_t acc = (int64_t)(uintptr_t)init_ptr;
-    for (int64_t i = 0; i < list->len; i++) {
-        acc = fn(cp, acc, obo_value_to_closure_arg(&list->items[i]));
-    }
-    return (void*)(uintptr_t)acc;
-}
-
-int64_t obo_mixed_list_any(void* lp, void* cp) {
-    OboMixedList* list = (OboMixedList*)lp;
-    if (!list || !cp) return 0;
-    obo_ml_closure_fn fn = (obo_ml_closure_fn)(((void**)cp)[0]);
-    for (int64_t i = 0; i < list->len; i++) {
-        if (fn(cp, obo_value_to_closure_arg(&list->items[i]))) return 1;
-    }
-    return 0;
-}
-
-int64_t obo_mixed_list_all(void* lp, void* cp) {
-    OboMixedList* list = (OboMixedList*)lp;
-    if (!list || !cp) return 1;
-    obo_ml_closure_fn fn = (obo_ml_closure_fn)(((void**)cp)[0]);
-    for (int64_t i = 0; i < list->len; i++) {
-        if (!fn(cp, obo_value_to_closure_arg(&list->items[i]))) return 0;
-    }
-    return 1;
-}
-
-/* --- List (i64 elements; opaque pointer) --- */
-typedef struct {
-    int64_t len;
-    int64_t cap;
-    int64_t items[];
-} OboList;
-
-static OboList* obo_alloc_list(int64_t len) {
-    if (len < 0) {
-        return NULL;
-    }
-    OboList* list = (OboList*)malloc(sizeof(OboList) + (size_t)len * sizeof(int64_t));
-    if (!list) {
-        return NULL;
-    }
-    list->len = len;
-    list->cap = len;
-    obo_gc_register_impl(list, OBO_GC_LIST_I64);
-    return list;
-}
-
-void* obo_list_new_i64(int64_t len, int64_t* data) {
-    if (len < 0) {
-        return NULL;
-    }
-    size_t n = (size_t)len;
-    OboList* p = obo_alloc_list(len);
-    if (!p) {
-        return NULL;
-    }
-    if (n > 0 && data) {
-        memcpy(p->items, data, n * sizeof(int64_t));
-    }
-    return p;
-}
-
-int64_t obo_list_len(void* p) {
-    if (!p) {
-        return 0;
-    }
-    return ((OboList*)p)->len;
-}
-
-int64_t obo_list_get(void* p, int64_t i) {
-    OboList* L = (OboList*)p;
-    if (!L || i < 0 || i >= L->len) {
-        return 0;
-    }
-    return L->items[i];
-}
-
-void obo_list_set_i64(void* p, int64_t i, int64_t val) {
-    OboList* L = (OboList*)p;
-    if (!L || i < 0 || i >= L->len) {
-        return;
-    }
-    L->items[i] = val;
-}
-
-void obo_list_print(void* p) {
-    obo_print_owned_line(obo_format_list_string(p));
-}
-
-/* --- Map: open hash with dynamic resizing --- */
-typedef struct MapEntry {
-    char* key;
-    OboValue val;
-    struct MapEntry* next;        /* hash-bucket chain */
-    struct MapEntry* order_next;  /* insertion-order doubly-linked list */
-    struct MapEntry* order_prev;
-} MapEntry;
-
-#define MAP_INIT_BUCKETS 16
-#define MAP_LOAD_FACTOR_NUM 3   /* resize when count*4 > nbuckets*3 (75%) */
-#define MAP_LOAD_FACTOR_DEN 4
-
-typedef struct {
-    MapEntry** buckets;
-    uint32_t nbuckets;
-    int64_t count;
-    MapEntry* order_head;  /* first inserted */
-    MapEntry* order_tail;  /* last inserted */
-} OboMap;
-
-static uint32_t map_hash_raw(const char* k) {
-    uint32_t h = 5381;
-    while (*k) {
-        h = ((h << 5) + h) + (unsigned char)*k++;
-    }
-    return h;
-}
-
-static inline uint32_t map_bucket(const OboMap* m, const char* k) {
-    return map_hash_raw(k) & (m->nbuckets - 1);
-}
-
-/* Legacy helper used by external callers that just need a bucket index for the old 64-bucket layout.
-   Now delegates through the map struct when available. Kept for obo_map_has / obo_type_check. */
-static uint32_t map_hash(const char* k) {
-    /* Fallback: should only be called from code that also has the OboMap* available.
-       We provide a 64-bucket compatible hash for backward compat in rare paths. */
-    return map_hash_raw(k) & 63;
-}
-
-static void map_resize(OboMap* m);
-
-static OboMap* obo_map_alloc_empty(void) {
-    OboMap* m = (OboMap*)malloc(sizeof(OboMap));
-    if (!m) return NULL;
-    m->nbuckets = MAP_INIT_BUCKETS;
-    m->buckets = (MapEntry**)calloc(m->nbuckets, sizeof(MapEntry*));
-    m->count = 0;
-    m->order_head = NULL;
-    m->order_tail = NULL;
-    return m;
-}
-
-void* obo_map_new(void) {
-    OboMap* m = obo_map_alloc_empty();
-    if (m) {
-        obo_gc_register_impl(m, OBO_GC_MAP);
-    }
-    return m;
-}
-
-int64_t obo_map_len(void* mp) {
-    OboMap* m = (OboMap*)mp;
-    return m ? m->count : 0;
-}
-
-static void map_insert(OboMap* m, const char* key, OboValue val) {
-    const char* ikey = obo_intern(key);
-    uint32_t i = map_bucket(m, ikey);
-    MapEntry* e = m->buckets[i];
-    while (e) {
-        if (e->key == ikey || strcmp(e->key, ikey) == 0) {
-            if (e->val.tag == OBO_V_STR && e->val.u.str) {
-                free(e->val.u.str);
-            }
-            e->val = val;
-            return;
-        }
-        e = e->next;
-    }
-    e = (MapEntry*)malloc(sizeof(MapEntry));
-    e->key = (char*)ikey;  /* interned — no strdup needed */
-    e->val = val;
-    e->next = m->buckets[i];
-    m->buckets[i] = e;
-    /* Append to insertion-order list */
-    e->order_prev = m->order_tail;
-    e->order_next = NULL;
-    if (m->order_tail) {
-        m->order_tail->order_next = e;
-    } else {
-        m->order_head = e;
-    }
-    m->order_tail = e;
-    m->count += 1;
-    /* Resize if load factor exceeded */
-    if ((uint64_t)m->count * MAP_LOAD_FACTOR_DEN > (uint64_t)m->nbuckets * MAP_LOAD_FACTOR_NUM) {
-        map_resize(m);
-    }
-}
-
-static void map_resize(OboMap* m) {
-    uint32_t new_nb = m->nbuckets * 2;
-    MapEntry** new_buckets = (MapEntry**)calloc(new_nb, sizeof(MapEntry*));
-    if (!new_buckets) return;  /* OOM: keep old table */
-    /* Rehash all entries from the insertion-order list */
-    for (MapEntry* e = m->order_head; e; e = e->order_next) {
-        uint32_t h = map_hash_raw(e->key) & (new_nb - 1);
-        e->next = new_buckets[h];
-        new_buckets[h] = e;
-    }
-    free(m->buckets);
-    m->buckets = new_buckets;
-    m->nbuckets = new_nb;
-}
-
-void obo_map_put_i64(void* mp, const char* key, int64_t v) {
-    OboValue val;
-    val.tag = OBO_V_I64;
-    val.u.i64 = v;
-    map_insert((OboMap*)mp, key, val);
-}
-
-void obo_map_put_str(void* mp, const char* key, const char* s) {
-    OboValue val;
-    val.tag = OBO_V_STR;
-    val.u.str = s ? strdup(s) : NULL;
-    map_insert((OboMap*)mp, key, val);
-}
-
-void obo_map_put_f64(void* mp, const char* key, double v) {
-    OboValue val;
-    val.tag = OBO_V_F64;
-    val.u.f64 = v;
-    map_insert((OboMap*)mp, key, val);
-}
-
-void obo_map_put_bool(void* mp, const char* key, int64_t v) {
-    OboValue val;
-    val.tag = OBO_V_BOOL;
-    val.u.i64 = v ? 1 : 0;
-    map_insert((OboMap*)mp, key, val);
-}
-
-void obo_map_put_null(void* mp, const char* key) {
-    OboValue val;
-    val.tag = OBO_V_NULL;
-    val.u.i64 = 0;
-    map_insert((OboMap*)mp, key, val);
-}
-
-void obo_map_put_list(void* mp, const char* key, void* list) {
-    OboValue val;
-    val.tag = OBO_V_LIST;
-    val.u.ptr = list;
-    map_insert((OboMap*)mp, key, val);
-}
-
-void obo_map_put_map(void* mp, const char* key, void* sub) {
-    OboValue val;
-    val.tag = OBO_V_MAP;
-    val.u.ptr = sub;
-    map_insert((OboMap*)mp, key, val);
-}
-
-void obo_map_put_entity(void* mp, const char* key, void* ent) {
-    OboValue val;
-    val.tag = OBO_V_ENTITY;
-    val.u.ptr = ent;
-    map_insert((OboMap*)mp, key, val);
-}
-
-void obo_map_put_boxed(void* mp, const char* key, void* boxed) {
-    OboValue* value = (OboValue*)boxed;
-    if (!value) {
-        obo_map_put_null(mp, key);
-        return;
-    }
-    OboValue copy = *value;
-    if (copy.tag == OBO_V_STR && copy.u.str) {
-        copy.u.str = strdup(copy.u.str);
-    }
-    map_insert((OboMap*)mp, key, copy);
-}
-
-void* obo_map_get_boxed(void* mp, const char* key) {
-    OboMap* m = (OboMap*)mp;
-    if (!m || !key) {
-        return &__obo_zero_boxed;
-    }
-    const char* ikey = obo_intern(key);
-    uint32_t i = map_bucket(m, ikey);
-    for (MapEntry* e = m->buckets[i]; e; e = e->next) {
-        if (e->key == ikey || strcmp(e->key, ikey) == 0) {
-            return &e->val;  /* direct pointer — no clone, no alloc */
-        }
-    }
-    return &__obo_zero_boxed;
-}
-
-void obo_map_print(void* mp) {
-    obo_print_owned_line(obo_format_map_string(mp));
-}
-
-void* obo_map_keys(void* mp) {
-    OboMap* m = (OboMap*)mp;
-    if (!m) return obo_mixed_list_new(0);
-    int64_t n = m->count;
-    void* list = obo_mixed_list_new(n);
-    int64_t i = 0;
-    for (MapEntry* e = m->order_head; e && i < n; e = e->order_next, i++) {
-        void* key_boxed = obo_box_str(strdup(e->key));
-        obo_mixed_list_set(list, i, key_boxed);
-    }
-    return list;
-}
-
-/* --- Entity --- */
-typedef struct {
-    char* type_name;
-    OboMap* fields;
-} OboEntity;
-
-void* obo_value_keys(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v) return obo_box_list(obo_mixed_list_new(0));
-    if (v->tag == OBO_V_MAP) {
-        return obo_box_list(obo_map_keys(v->u.ptr));
-    }
-    if (v->tag == OBO_V_ENTITY) {
-        OboEntity* e = (OboEntity*)v->u.ptr;
-        if (e && e->fields) return obo_box_list(obo_map_keys(e->fields));
-    }
-    return obo_box_list(obo_mixed_list_new(0));
-}
-
-const char* obo_entity_type_name(void* ep) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e) {
-        return "";
-    }
-    return e->type_name ? e->type_name : "";
-}
-
-void* obo_entity_new(const char* type_name) {
-    OboEntity* e = (OboEntity*)malloc(sizeof(OboEntity));
-    if (!e) {
-        return NULL;
-    }
-    e->type_name = type_name ? strdup(type_name) : NULL;
-    /* Field map is owned by the entity — not a separate GC object (avoids double-free). */
-    e->fields = obo_map_alloc_empty();
-    obo_gc_register_impl(e, OBO_GC_ENTITY);
-    return e;
-}
-
-void obo_entity_put_i64(void* ep, const char* field, int64_t v) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e || !e->fields) {
-        return;
-    }
-    obo_map_put_i64(e->fields, field, v);
-}
-
-void obo_entity_put_str(void* ep, const char* field, const char* s) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e || !e->fields) {
-        return;
-    }
-    obo_map_put_str(e->fields, field, s);
-}
-
-void obo_entity_put_f64(void* ep, const char* field, double v) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e || !e->fields) {
-        return;
-    }
-    obo_map_put_f64(e->fields, field, v);
-}
-
-void obo_entity_put_bool(void* ep, const char* field, int64_t v) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e || !e->fields) {
-        return;
-    }
-    obo_map_put_bool(e->fields, field, v);
-}
-
-void obo_entity_put_null(void* ep, const char* field) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e || !e->fields) {
-        return;
-    }
-    obo_map_put_null(e->fields, field);
-}
-
-void obo_entity_put_list(void* ep, const char* field, void* list) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e || !e->fields) {
-        return;
-    }
-    obo_map_put_list(e->fields, field, list);
-}
-
-void obo_entity_put_map(void* ep, const char* field, void* map) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e || !e->fields) {
-        return;
-    }
-    obo_map_put_map(e->fields, field, map);
-}
-
-void obo_entity_put_entity(void* ep, const char* field, void* entity) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e || !e->fields) {
-        return;
-    }
-    obo_map_put_entity(e->fields, field, entity);
-}
-
-void obo_entity_put_boxed(void* ep, const char* field, void* boxed) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e || !e->fields) {
-        return;
-    }
-    obo_map_put_boxed(e->fields, field, boxed);
-}
-
-void* obo_entity_get_boxed(void* ep, const char* field) {
-    OboEntity* e = (OboEntity*)ep;
-    if (!e || !e->fields) {
-        return &__obo_zero_boxed;
-    }
-    return obo_map_get_boxed(e->fields, field);
-}
-
-void obo_entity_print(void* ep) {
-    obo_print_owned_line(obo_format_entity_string(ep));
-}
-
-/* --- Printing / conversion helpers for double --- */
-void obo_print_double(double v) {
-    if (v == (int64_t)v && fabs(v) < 1e15) {
-        printf("%.1f\n", v);
-    } else {
-        printf("%.15g\n", v);
-    }
-}
-
-char* obo_f64_to_str(double v) {
-    char buf[64];
-    if (v == (int64_t)v && fabs(v) < 1e15) {
-        snprintf(buf, sizeof(buf), "%.1f", v);
-    } else {
-        snprintf(buf, sizeof(buf), "%.15g", v);
-    }
-    return obo_gc_track_string(strdup(buf));
-}
-
-int64_t obo_value_truthy(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v) return 0;
-    switch (v->tag) {
-        case OBO_V_I64:
-            return v->u.i64 != 0;
-        case OBO_V_F64:
-            return v->u.f64 != 0.0;
-        case OBO_V_STR:
-            return v->u.str && v->u.str[0] != '\0';
-        case OBO_V_BOOL:
-            return v->u.i64 ? 1 : 0;
-        case OBO_V_NULL:
-            return 0;
-        case OBO_V_LIST: {
-            OboList* list = (OboList*)v->u.ptr;
-            return (list && list->len != 0) ? 1 : 0;
-        }
-        case OBO_V_MAP:
-        case OBO_V_ENTITY:
-            return v->u.ptr ? 1 : 0;
-        default:
-            return 0;
-    }
-}
-
-void* obo_value_as_list_ptr(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v || v->tag != OBO_V_LIST) {
-        return NULL;
-    }
-    return v->u.ptr;
-}
-
-void* obo_value_as_map_ptr(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v || v->tag != OBO_V_MAP) {
-        return NULL;
-    }
-    return v->u.ptr;
-}
-
-char* obo_value_to_str(void* p) {
-    OboValue* v = (OboValue*)p;
-    char* text = obo_format_boxed_string(v);
-    if (!text) {
-        return obo_gc_track_string(strdup("?"));
-    }
-    return obo_gc_track_string(text);
-}
-
-/* --- Math (native stubs; match interpreter semantics) --- */
-int64_t __sys_Math_abs(int64_t n) { return n < 0 ? -n : n; }
-
-int64_t __sys_Math_floor(double n) { return (int64_t)floor(n); }
-
-int64_t __sys_Math_ceil(double n) { return (int64_t)ceil(n); }
-
-int64_t __sys_Math_round(double n) { return (int64_t)round(n); }
-
-double __sys_Math_sqrt(double n) { return sqrt(fabs(n)); }
-
-int64_t __sys_Math_min(int64_t a, int64_t b) { return a < b ? a : b; }
-
-int64_t __sys_Math_max(int64_t a, int64_t b) { return a > b ? a : b; }
-
-int64_t __sys_Math_sign(int64_t n) { return (n > 0) - (n < 0); }
-
-double __sys_Math_pi(void) { return 3.14159265358979323846; }
-
-double __sys_Math_e(void) { return 2.71828182845904523536; }
-
-double __sys_Math_infinity(void) { return 1.0 / 0.0; }
-
-int64_t __sys_Math_maxNumber(void) { return INT64_MAX; }
-
-int64_t __sys_Math_minNumber(void) { return INT64_MIN; }
-
-double __sys_Math_pow(double base, double exp) { return pow(base, exp); }
-
-double __sys_Math_sin(double n) { return sin(n); }
-
-double __sys_Math_cos(double n) { return cos(n); }
-
-double __sys_Math_tan(double n) { return tan(n); }
-
-double __sys_Math_asin(double n) { return asin(n); }
-
-double __sys_Math_acos(double n) { return acos(n); }
-
-double __sys_Math_atan(double n) { return atan(n); }
-
-double __sys_Math_atan2(double y, double x) { return atan2(y, x); }
-
-double __sys_Math_log(double n) { return log(n); }
-
-double __sys_Math_log10(double n) { return log10(n); }
-
-double __sys_Math_clamp(double v, double lo, double hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-
-double __sys_Math_random(void) {
-    static int seeded = 0;
-    if (!seeded) { srand((unsigned)time(NULL)); seeded = 1; }
-    return (double)rand() / ((double)RAND_MAX + 1.0);
-}
-
-int64_t __sys_Math_randomInt(int64_t lo, int64_t hi) {
-    if (lo > hi) return lo;
-    double r = __sys_Math_random();
-    return lo + (int64_t)(r * (double)(hi - lo + 1));
-}
-
-double __sys_Math_lerp(double a, double b, double t) { return a + (b - a) * t; }
-
-/* Time */
-int64_t __sys_Time_now(void) {
-    struct timeval tv;
-    if (gettimeofday(&tv, NULL) != 0) {
-        return 0;
-    }
-    return (int64_t)tv.tv_sec * 1000 + (int64_t)tv.tv_usec / 1000;
-}
-
-int64_t __sys_Time_nowSeconds(void) {
-    return (int64_t)time(NULL);
-}
-
-int64_t __sys_Time_sleep(int64_t ms) {
-    if (ms <= 0) {
-        return 0;
-    }
-    struct timespec ts;
-    ts.tv_sec = (time_t)(ms / 1000);
-    ts.tv_nsec = (long)((ms % 1000) * 1000000);
-    nanosleep(&ts, NULL);
-    return 0;
-}
-
-static struct timeval __obo_timer_start;
-static int __obo_timer_running = 0;
-
-int64_t __sys_Time_startTimer(void) {
-    gettimeofday(&__obo_timer_start, NULL);
-    __obo_timer_running = 1;
-    return 0;
-}
-
-int64_t __sys_Time_stopTimer(void) {
-    if (!__obo_timer_running) return 0;
-    struct timeval now;
-    gettimeofday(&now, NULL);
-    __obo_timer_running = 0;
-    return (int64_t)(now.tv_sec - __obo_timer_start.tv_sec) * 1000
-         + (int64_t)(now.tv_usec - __obo_timer_start.tv_usec) / 1000;
-}
-
-double __sys_Time_measure(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec * 1000.0 + (double)tv.tv_usec / 1000.0;
-}
-
-/* File (minimal) */
-char* __sys_File_read(char* path) {
-    FILE* f = fopen(path, "rb");
-    if (!f) {
-        return obo_gc_track_string(strdup(""));
-    }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz < 0) {
-        fclose(f);
-        return obo_gc_track_string(strdup(""));
-    }
-    char* buf = (char*)malloc((size_t)sz + 1);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    size_t n = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[n] = 0;
-    return obo_gc_track_string(buf);
-}
-
-int64_t __sys_File_exists(char* path) {
-    FILE* f = fopen(path, "rb");
-    if (f) {
-        fclose(f);
-        return 1;
-    }
-    return 0;
-}
-
-int64_t __sys_File_write(char* path, char* contents) {
-    if (!path || !contents) return 0;
-    FILE* f = fopen(path, "wb");
-    if (!f) return 0;
-    fwrite(contents, 1, strlen(contents), f);
-    fclose(f);
-    return 1;
-}
-
-int64_t __sys_File_append(char* path, char* contents) {
-    if (!path || !contents) return 0;
-    FILE* f = fopen(path, "ab");
-    if (!f) return 0;
-    fwrite(contents, 1, strlen(contents), f);
-    fclose(f);
-    return 1;
-}
-
-int64_t __sys_File_delete(char* path) {
-    if (!path) return 0;
-    return remove(path) == 0 ? 1 : 0;
-}
-
-char* __sys_File_readLines(char* path) {
-    return __sys_File_read(path);
-}
-
-/* Convert */
-int64_t __sys_Convert_toNumber(char* s) {
-    if (!s) {
-        return 0;
-    }
-    return (int64_t)strtoll(s, NULL, 10);
-}
-
-char* __sys_Convert_toText(int64_t n) { return obo_i64_to_str((long long)n); }
-
-double __sys_Convert_toDecimal(char* s) {
-    if (!s) return 0.0;
-    return strtod(s, NULL);
-}
-
-int64_t __sys_Convert_toFlag(int64_t n) { return n ? 1 : 0; }
-
-int64_t __sys_Convert_toChar(int64_t n) { return n; }
-
-/* --- Pointer operations (metal mode) --- */
-int64_t __sys_pointer_alloc(int64_t size) {
-    void* ptr = malloc((size_t)size);
-    return (int64_t)(uintptr_t)ptr;
-}
-
-int64_t __sys_pointer_free(int64_t ptr) {
-    free((void*)(uintptr_t)ptr);
-    return 0;
-}
-
-/* --- Text methods (native stubs for text.member / text.method()) --- */
-#include <ctype.h>
-
-int64_t __text_length(const char* s) { return s ? (int64_t)strlen(s) : 0; }
-
-int64_t __text_empty(const char* s) { return (!s || s[0] == '\0') ? 1 : 0; }
-
-char* __text_upper(const char* s) {
-    if (!s) return obo_gc_track_string(strdup(""));
-    size_t n = strlen(s);
-    char* out = (char*)malloc(n + 1);
-    for (size_t i = 0; i <= n; i++) out[i] = (char)toupper((unsigned char)s[i]);
-    return obo_gc_track_string(out);
-}
-
-char* __text_lower(const char* s) {
-    if (!s) return obo_gc_track_string(strdup(""));
-    size_t n = strlen(s);
-    char* out = (char*)malloc(n + 1);
-    for (size_t i = 0; i <= n; i++) out[i] = (char)tolower((unsigned char)s[i]);
-    return obo_gc_track_string(out);
-}
-
-char* __text_trim(const char* s) {
-    if (!s) return obo_gc_track_string(strdup(""));
-    while (*s && isspace((unsigned char)*s)) s++;
-    size_t n = strlen(s);
-    while (n > 0 && isspace((unsigned char)s[n - 1])) n--;
-    char* out = (char*)malloc(n + 1);
-    memcpy(out, s, n); out[n] = 0;
-    return obo_gc_track_string(out);
-}
-
-char* __text_trimStart(const char* s) {
-    if (!s) return obo_gc_track_string(strdup(""));
-    while (*s && isspace((unsigned char)*s)) s++;
-    return obo_gc_track_string(strdup(s));
-}
-
-char* __text_trimEnd(const char* s) {
-    if (!s) return obo_gc_track_string(strdup(""));
-    size_t n = strlen(s);
-    while (n > 0 && isspace((unsigned char)s[n - 1])) n--;
-    char* out = (char*)malloc(n + 1);
-    memcpy(out, s, n); out[n] = 0;
-    return obo_gc_track_string(out);
-}
-
-char* __text_reversed(const char* s) {
-    if (!s) return obo_gc_track_string(strdup(""));
-    size_t n = strlen(s);
-    char* out = (char*)malloc(n + 1);
-    for (size_t i = 0; i < n; i++) out[i] = s[n - 1 - i];
-    out[n] = 0;
-    return obo_gc_track_string(out);
-}
-
-int64_t __text_contains(const char* s, const char* sub) {
-    if (!s || !sub) return 0;
-    return strstr(s, sub) ? 1 : 0;
-}
-
-int64_t __text_startsWith(const char* s, const char* pre) {
-    if (!s || !pre) return 0;
-    size_t n = strlen(pre);
-    return strncmp(s, pre, n) == 0 ? 1 : 0;
-}
-
-int64_t __text_endsWith(const char* s, const char* suf) {
-    if (!s || !suf) return 0;
-    size_t sn = strlen(s), fn = strlen(suf);
-    if (fn > sn) return 0;
-    return strcmp(s + sn - fn, suf) == 0 ? 1 : 0;
-}
-
-int64_t __text_indexOf(const char* s, const char* sub) {
-    if (!s || !sub) return -1;
-    const char* p = strstr(s, sub);
-    return p ? (int64_t)(p - s) : -1;
-}
-
-char* __text_replace(const char* s, const char* from, const char* to) {
-    if (!s) return obo_gc_track_string(strdup(""));
-    if (!from || !from[0]) return obo_gc_track_string(strdup(s));
-    if (!to) to = "";
-    size_t flen = strlen(from), tlen = strlen(to), slen = strlen(s);
-    size_t cap = slen + 1;
-    char* out = (char*)malloc(cap);
-    size_t oi = 0;
-    const char* p = s;
-    while (*p) {
-        const char* f = strstr(p, from);
-        if (!f) { size_t rest = strlen(p); if (oi + rest >= cap) { cap = oi + rest + 1; out = (char*)realloc(out, cap); } memcpy(out + oi, p, rest); oi += rest; break; }
-        size_t seg = (size_t)(f - p);
-        if (oi + seg + tlen >= cap) { cap = (oi + seg + tlen) * 2 + 1; out = (char*)realloc(out, cap); }
-        memcpy(out + oi, p, seg); oi += seg;
-        memcpy(out + oi, to, tlen); oi += tlen;
-        p = f + flen;
-    }
-    out[oi] = 0;
-    return obo_gc_track_string(out);
-}
-
-char* __text_substring(const char* s, int64_t start, int64_t end) {
-    if (!s) return obo_gc_track_string(strdup(""));
-    int64_t slen = (int64_t)strlen(s);
-    if (start < 0) start = 0;
-    if (end > slen) end = slen;
-    if (start >= end) return obo_gc_track_string(strdup(""));
-    size_t n = (size_t)(end - start);
-    char* out = (char*)malloc(n + 1);
-    memcpy(out, s + start, n); out[n] = 0;
-    return obo_gc_track_string(out);
-}
-
-char* __text_repeat(const char* s, int64_t count) {
-    if (!s || count <= 0) return obo_gc_track_string(strdup(""));
-    size_t slen = strlen(s);
-    size_t total = slen * (size_t)count;
-    char* out = (char*)malloc(total + 1);
-    for (int64_t i = 0; i < count; i++) memcpy(out + i * slen, s, slen);
-    out[total] = 0;
-    return obo_gc_track_string(out);
-}
-
-char* __text_padLeft(const char* s, int64_t width, const char* pad) {
-    if (!s) s = "";
-    if (!pad || !pad[0]) pad = " ";
-    int64_t slen = (int64_t)strlen(s);
-    if (slen >= width) return obo_gc_track_string(strdup(s));
-    int64_t need = width - slen;
-    char* out = (char*)malloc((size_t)width + 1);
-    for (int64_t i = 0; i < need; i++) out[i] = pad[i % (int64_t)strlen(pad)];
-    memcpy(out + need, s, (size_t)slen + 1);
-    return obo_gc_track_string(out);
-}
-
-char* __text_padRight(const char* s, int64_t width, const char* pad) {
-    if (!s) s = "";
-    if (!pad || !pad[0]) pad = " ";
-    int64_t slen = (int64_t)strlen(s);
-    if (slen >= width) return obo_gc_track_string(strdup(s));
-    int64_t need = width - slen;
-    char* out = (char*)malloc((size_t)width + 1);
-    memcpy(out, s, (size_t)slen);
-    for (int64_t i = 0; i < need; i++) out[slen + i] = pad[i % (int64_t)strlen(pad)];
-    out[width] = 0;
-    return obo_gc_track_string(out);
-}
-
-int64_t __text_toNumber(const char* s) {
-    if (!s) return 0;
-    return (int64_t)strtoll(s, NULL, 10);
-}
-
-double __text_toDecimal(const char* s) {
-    if (!s) return 0.0;
-    return strtod(s, NULL);
-}
-
-/* split returns a text list as a single string with \0 separators — for bootstrap, returns joined text */
-char* __text_split(const char* s, const char* sep) {
-    (void)sep;
-    return obo_gc_track_string(s ? strdup(s) : strdup(""));
-}
-
-/* --- List methods (native stubs) --- */
-void* obo_list_add(void* p, int64_t val) {
-    OboList* L = (OboList*)p;
-    int64_t old_len = L ? L->len : 0;
-    int64_t new_len = old_len + 1;
-
-    OboList* N;
-    if (L && new_len <= L->cap) {
-        /* Fast path: capacity available */
-        N = L;
-    } else {
-        int64_t new_cap = new_len < 8 ? 8 : new_len * 2;
-        if (L) {
-            N = (OboList*)realloc(L, sizeof(OboList) + (size_t)new_cap * sizeof(int64_t));
-            if (!N) return NULL;
-            GCNode* gn = gc_find_node(L);
-            if (gn) {
-                gc_ht_remove(gn);
-                gn->ptr = N;
-                uint32_t h = gc_ptr_hash(N);
-                gn->ht_next = __obo_gc_ht[h];
-                __obo_gc_ht[h] = gn;
-            }
-        } else {
-            N = obo_alloc_list(new_cap);
-            if (!N) return NULL;
-            N->len = 0;
-        }
-        N->cap = new_cap;
-    }
-    N->items[old_len] = val;
-    N->len = new_len;
-    return N;
-}
-
-int64_t obo_list_first(void* p) {
-    OboList* L = (OboList*)p;
-    return (L && L->len > 0) ? L->items[0] : 0;
-}
-
-int64_t obo_list_last(void* p) {
-    OboList* L = (OboList*)p;
-    return (L && L->len > 0) ? L->items[L->len - 1] : 0;
-}
-
-int64_t obo_list_empty(void* p) {
-    OboList* L = (OboList*)p;
-    return (!L || L->len == 0) ? 1 : 0;
-}
-
-int64_t obo_list_contains(void* p, int64_t val) {
-    OboList* L = (OboList*)p;
-    if (!L) return 0;
-    for (int64_t i = 0; i < L->len; i++) if (L->items[i] == val) return 1;
-    return 0;
-}
-
-int64_t obo_list_indexOf(void* p, int64_t val) {
-    OboList* L = (OboList*)p;
-    if (!L) return -1;
-    for (int64_t i = 0; i < L->len; i++) if (L->items[i] == val) return i;
-    return -1;
-}
-
-static int cmp_i64(const void* a, const void* b) {
-    int64_t x = *(const int64_t*)a, y = *(const int64_t*)b;
-    return (x > y) - (x < y);
-}
-
-void* obo_list_sort(void* p) {
-    OboList* L = (OboList*)p;
-    if (!L || L->len <= 1) return p;
-    int64_t n = L->len;
-    OboList* N = obo_alloc_list(n);
-    if (!N) return NULL;
-    memcpy(N->items, L->items, (size_t)n * sizeof(int64_t));
-    qsort(N->items, (size_t)n, sizeof(int64_t), cmp_i64);
-    return N;
-}
-
-void* obo_list_reverse(void* p) {
-    OboList* L = (OboList*)p;
-    if (!L) return obo_list_new_i64(0, NULL);
-    int64_t n = L->len;
-    OboList* N = obo_alloc_list(n);
-    if (!N) return NULL;
-    for (int64_t i = 0; i < n; i++) N->items[i] = L->items[n - 1 - i];
-    return N;
-}
-
-void* obo_list_take(void* p, int64_t count) {
-    OboList* L = (OboList*)p;
-    int64_t n = L ? L->len : 0;
-    if (count > n) count = n;
-    if (count < 0) count = 0;
-    OboList* N = obo_alloc_list(count);
-    if (!N) return NULL;
-    if (count > 0) memcpy(N->items, L->items, (size_t)count * sizeof(int64_t));
-    return N;
-}
-
-void* obo_list_skip(void* p, int64_t count) {
-    OboList* L = (OboList*)p;
-    int64_t n = L ? L->len : 0;
-    if (count < 0) count = 0;
-    if (count >= n) return obo_list_new_i64(0, NULL);
-    int64_t new_len = n - count;
-    OboList* N = obo_alloc_list(new_len);
-    if (!N) return NULL;
-    memcpy(N->items, L->items + count, (size_t)new_len * sizeof(int64_t));
-    return N;
-}
-
-void* obo_list_slice(void* p, int64_t start, int64_t end) {
-    OboList* L = (OboList*)p;
-    int64_t n = L ? L->len : 0;
-    if (start < 0) start = 0;
-    if (end > n) end = n;
-    if (start >= end) return obo_list_new_i64(0, NULL);
-    int64_t new_len = end - start;
-    OboList* N = obo_alloc_list(new_len);
-    if (!N) return NULL;
-    memcpy(N->items, L->items + start, (size_t)new_len * sizeof(int64_t));
-    return N;
-}
-
-void* obo_list_remove(void* p, int64_t val) {
-    OboList* L = (OboList*)p;
-    if (!L || L->len == 0) return p;
-    int64_t idx = -1;
-    for (int64_t i = 0; i < L->len; i++) { if (L->items[i] == val) { idx = i; break; } }
-    if (idx < 0) return p;
-    int64_t new_len = L->len - 1;
-    OboList* N = obo_alloc_list(new_len);
-    if (!N) return NULL;
-    if (idx > 0) memcpy(N->items, L->items, (size_t)idx * sizeof(int64_t));
-    if (idx < L->len - 1) memcpy(N->items + idx, L->items + idx + 1, (size_t)(L->len - idx - 1) * sizeof(int64_t));
-    return N;
-}
-
-void* obo_list_removeAt(void* p, int64_t idx) {
-    OboList* L = (OboList*)p;
-    if (!L || idx < 0 || idx >= L->len) return p;
-    int64_t new_len = L->len - 1;
-    OboList* N = obo_alloc_list(new_len);
-    if (!N) return NULL;
-    if (idx > 0) memcpy(N->items, L->items, (size_t)idx * sizeof(int64_t));
-    if (idx < L->len - 1) memcpy(N->items + idx, L->items + idx + 1, (size_t)(L->len - idx - 1) * sizeof(int64_t));
-    return N;
-}
-
-void* obo_list_insert(void* p, int64_t idx, int64_t val) {
-    OboList* L = (OboList*)p;
-    int64_t n = L ? L->len : 0;
-    if (idx < 0) idx = 0;
-    if (idx > n) idx = n;
-    int64_t new_len = n + 1;
-    OboList* N = obo_alloc_list(new_len);
-    if (!N) return NULL;
-    if (idx > 0 && L) memcpy(N->items, L->items, (size_t)idx * sizeof(int64_t));
-    N->items[idx] = val;
-    if (idx < n && L) memcpy(N->items + idx + 1, L->items + idx, (size_t)(n - idx) * sizeof(int64_t));
-    return N;
-}
-
-char* obo_list_join(void* p, const char* sep) {
-    OboList* L = (OboList*)p;
-    if (!L || L->len == 0) return obo_gc_track_string(strdup(""));
-    if (!sep) sep = ", ";
-    size_t slen = strlen(sep);
-    size_t cap = 256;
-    char* out = (char*)malloc(cap);
-    size_t oi = 0;
-    for (int64_t i = 0; i < L->len; i++) {
-        if (i > 0) { if (oi + slen >= cap) { cap = (oi + slen) * 2 + 1; out = (char*)realloc(out, cap); } memcpy(out + oi, sep, slen); oi += slen; }
-        char buf[32]; int n = snprintf(buf, sizeof(buf), "%lld", (long long)L->items[i]);
-        if (oi + (size_t)n >= cap) { cap = (oi + (size_t)n) * 2 + 1; out = (char*)realloc(out, cap); }
-        memcpy(out + oi, buf, (size_t)n); oi += (size_t)n;
-    }
-    out[oi] = 0;
-    return obo_gc_track_string(out);
-}
-
-void* obo_list_distinct(void* p) {
-    OboList* L = (OboList*)p;
-    if (!L || L->len == 0) return obo_list_new_i64(0, NULL);
-    int64_t n = L->len;
-    int64_t* tmp_items = (int64_t*)malloc((size_t)n * sizeof(int64_t));
-    int64_t out_len = 0;
-    for (int64_t i = 0; i < n; i++) {
-        int dup = 0;
-        for (int64_t j = 0; j < out_len; j++) { if (tmp_items[j] == L->items[i]) { dup = 1; break; } }
-        if (!dup) tmp_items[out_len++] = L->items[i];
-    }
-    void* result = obo_list_new_i64(out_len, tmp_items);
-    free(tmp_items);
-    return result;
-}
-
-/* --- Set methods (backed by OboList, deduplicated) --- */
-
-void* obo_set_new(void* list_ptr) {
-    OboList* L = (OboList*)list_ptr;
-    if (!L || L->len == 0) return obo_list_new_i64(0, NULL);
-    int64_t* tmp = (int64_t*)malloc((size_t)L->len * sizeof(int64_t));
-    int64_t out = 0;
-    for (int64_t i = 0; i < L->len; i++) {
-        int dup = 0;
-        for (int64_t j = 0; j < out; j++) { if (tmp[j] == L->items[i]) { dup = 1; break; } }
-        if (!dup) tmp[out++] = L->items[i];
-    }
-    void* result = obo_list_new_i64(out, tmp);
-    free(tmp);
-    return result;
-}
-
-void* obo_set_add(void* p, int64_t val) {
-    OboList* L = (OboList*)p;
-    if (L) {
-        for (int64_t i = 0; i < L->len; i++) {
-            if (L->items[i] == val) return p; /* already present */
-        }
-    }
-    return obo_list_add(p, val);
-}
-
-void* obo_set_remove(void* p, int64_t val) {
-    return obo_list_remove(p, val);
-}
-
-int64_t obo_set_has(void* p, int64_t val) {
-    return obo_list_contains(p, val);
-}
-
-void* obo_set_union(void* a, void* b) {
-    OboList* la = (OboList*)a;
-    OboList* lb = (OboList*)b;
-    if (!la) return b ? b : obo_list_new_i64(0, NULL);
-    void* result = obo_list_new_i64(la->len, la->items);
-    if (lb) {
-        for (int64_t i = 0; i < lb->len; i++) {
-            result = obo_set_add(result, lb->items[i]);
-        }
-    }
-    return result;
-}
-
-void* obo_set_intersect(void* a, void* b) {
-    OboList* la = (OboList*)a;
-    OboList* lb = (OboList*)b;
-    if (!la || !lb) return obo_list_new_i64(0, NULL);
-    int64_t* tmp = (int64_t*)malloc((size_t)la->len * sizeof(int64_t));
-    int64_t out = 0;
-    for (int64_t i = 0; i < la->len; i++) {
-        for (int64_t j = 0; j < lb->len; j++) {
-            if (la->items[i] == lb->items[j]) { tmp[out++] = la->items[i]; break; }
-        }
-    }
-    void* result = obo_list_new_i64(out, tmp);
-    free(tmp);
-    return result;
-}
-
-void* obo_set_difference(void* a, void* b) {
-    OboList* la = (OboList*)a;
-    OboList* lb = (OboList*)b;
-    if (!la) return obo_list_new_i64(0, NULL);
-    if (!lb) return obo_list_new_i64(la->len, la->items);
-    int64_t* tmp = (int64_t*)malloc((size_t)la->len * sizeof(int64_t));
-    int64_t out = 0;
-    for (int64_t i = 0; i < la->len; i++) {
-        int found = 0;
-        for (int64_t j = 0; j < lb->len; j++) {
-            if (la->items[i] == lb->items[j]) { found = 1; break; }
-        }
-        if (!found) tmp[out++] = la->items[i];
-    }
-    void* result = obo_list_new_i64(out, tmp);
-    free(tmp);
-    return result;
-}
-
-/* --- Queue methods (FIFO, backed by OboList) --- */
-
-void* obo_queue_push(void* p, int64_t val) {
-    return obo_list_add(p, val);
-}
-
-int64_t obo_queue_peek(void* p) {
-    return obo_list_first(p);
-}
-
-void* obo_queue_pop(void* p) {
-    OboList* L = (OboList*)p;
-    if (!L || L->len == 0) return obo_list_new_i64(0, NULL);
-    return obo_list_skip(p, 1); /* remove first element */
-}
-
-/* --- Stack methods (LIFO, backed by OboList) --- */
-
-void* obo_stack_push(void* p, int64_t val) {
-    return obo_list_add(p, val);
-}
-
-int64_t obo_stack_peek(void* p) {
-    return obo_list_last(p);
-}
-
-void* obo_stack_pop(void* p) {
-    OboList* L = (OboList*)p;
-    if (!L || L->len == 0) return obo_list_new_i64(0, NULL);
-    /* Remove last element */
-    int64_t new_len = L->len - 1;
-    return obo_list_new_i64(new_len, L->items);
-}
-
-/* --- Map methods --- */
-int64_t obo_map_empty(void* mp) { return obo_map_len(mp) == 0 ? 1 : 0; }
-
-int64_t obo_map_has(void* mp, const char* key) {
-    OboMap* m = (OboMap*)mp;
-    if (!m || !key) return 0;
-    const char* ikey = obo_intern(key);
-    uint32_t i = map_bucket(m, ikey);
-    for (MapEntry* e = m->buckets[i]; e; e = e->next)
-        if (e->key == ikey || strcmp(e->key, ikey) == 0) return 1;
-    return 0;
-}
-
-void* obo_map_set(void* mp, const char* key, int64_t val) {
-    if (!mp) mp = obo_map_new();
-    obo_map_put_i64(mp, key, val);
-    return mp;
-}
-
-void* obo_map_remove(void* mp, const char* key) {
-    OboMap* m = (OboMap*)mp;
-    if (!m || !key) return mp;
-    const char* ikey = obo_intern(key);
-    uint32_t i = map_bucket(m, ikey);
-    MapEntry** pp = &m->buckets[i];
-    while (*pp) {
-        if ((*pp)->key == ikey || strcmp((*pp)->key, ikey) == 0) {
-            MapEntry* e = *pp;
-            *pp = e->next;
-            /* Unlink from insertion-order list */
-            if (e->order_prev) {
-                e->order_prev->order_next = e->order_next;
-            } else {
-                m->order_head = e->order_next;
-            }
-            if (e->order_next) {
-                e->order_next->order_prev = e->order_prev;
-            } else {
-                m->order_tail = e->order_prev;
-            }
-            /* key is interned — do NOT free */
-            if (e->val.tag == OBO_V_STR && e->val.u.str) free(e->val.u.str);
-            free(e);
-            m->count--;
-            return m;
-        }
-        pp = &(*pp)->next;
-    }
-    return mp;
-}
-
-/* --- Type checking (for check ... is Type) --- */
-int64_t obo_type_check(void* p, const char* type_name) {
-    if (!type_name) return 0;
-    OboEntity* e = (OboEntity*)p;
-    if (!e) return 0;
-    /* First check entity type_name (for entities and actors) */
-    if (e->type_name && strcmp(e->type_name, type_name) == 0) return 1;
-    /* Then check __variant field (for choice values) */
-    if (e->fields) {
-        OboMap* m = e->fields;
-        uint32_t i = map_bucket(m, "__variant");
-        for (MapEntry* ent = m->buckets[i]; ent; ent = ent->next) {
-            if (strcmp(ent->key, "__variant") == 0) {
-                if (ent->val.tag == OBO_V_STR && ent->val.u.str && strcmp(ent->val.u.str, type_name) == 0) return 1;
-                break;
-            }
-        }
-    }
-    return 0;
-}
-
-/* --- Error handling (possible/else via setjmp/longjmp) --- */
-#define OBO_POSSIBLE_STACK_SIZE 64
-
-typedef struct {
-    jmp_buf buf;
-} OboPossibleFrame;
-
-static OboPossibleFrame __obo_possible_stack[OBO_POSSIBLE_STACK_SIZE];
-static int __obo_possible_top = 0;
-static char* __obo_possible_error = NULL;
-
-void* obo_possible_push(void) {
-    if (__obo_possible_top >= OBO_POSSIBLE_STACK_SIZE) {
-        fprintf(stderr, "Obo: Too many nested possible blocks\n");
-        exit(1);
-    }
-    return &__obo_possible_stack[__obo_possible_top++].buf;
-}
-
-int64_t obo_possible_pop(void) {
-    if (__obo_possible_top > 0) __obo_possible_top--;
-    return 0;
-}
-
-void obo_throw(const char* msg) {
-    if (__obo_possible_top > 0) {
-        __obo_possible_top--;
-        if (__obo_possible_error) free(__obo_possible_error);
-        __obo_possible_error = msg ? strdup(msg) : strdup("unknown error");
-        longjmp(__obo_possible_stack[__obo_possible_top].buf, 1);
-    } else {
-        fprintf(stderr, "Obo: Unhandled error: %s\n", msg ? msg : "unknown error");
-        exit(1);
-    }
-}
-
-char* obo_possible_get_error(void) {
-    char* e = __obo_possible_error ? __obo_possible_error : strdup("");
-    __obo_possible_error = NULL;
-    return e;
-}
-
-int64_t obo_safe_div(int64_t a, int64_t b) {
-    if (b == 0) {
-        obo_throw("Obo: Division by zero — that's not going to work");
-        return 0; /* unreachable if possible block active */
-    }
-    return a / b;
-}
-
-int64_t obo_safe_mod(int64_t a, int64_t b) {
-    if (b == 0) {
-        obo_throw("Obo: Modulo by zero — that's not going to work");
-        return 0;
-    }
-    return a % b;
-}
-
-/* --- Range → List (exclusive end, matching interpreter) --- */
-void* obo_range(int64_t start, int64_t end, int64_t step) {
-    if (step == 0) step = 1;
-    int64_t count = 0;
-    if (step > 0 && start < end) {
-        count = (end - start + step - 1) / step;
-    } else if (step < 0 && start > end) {
-        count = (start - end + (-step) - 1) / (-step);
-    }
-    if (count <= 0) return obo_list_new_i64(0, NULL);
-    int64_t* tmp = (int64_t*)malloc(count * sizeof(int64_t));
-    int64_t val = start;
-    for (int64_t i = 0; i < count; i++) {
-        tmp[i] = val;
-        val += step;
-    }
-    void* list = obo_list_new_i64(count, tmp);
-    free(tmp);
-    return list;
-}
-
-/* --- GC continued: root stack, collection --- */
-
-/* Shadow stack for GC roots (pointers to stack slots holding heap refs) */
-#define OBO_GC_ROOT_STACK_SIZE 4096
-static void** __obo_gc_roots[OBO_GC_ROOT_STACK_SIZE];
-static int64_t __obo_gc_root_top = 0;
-
-void obo_gc_push_root(void** slot) {
-    if (__obo_gc_root_top < OBO_GC_ROOT_STACK_SIZE) {
-        __obo_gc_roots[__obo_gc_root_top++] = slot;
-    }
-}
-
-void obo_gc_pop_roots(int64_t n) {
-    __obo_gc_root_top -= n;
-    if (__obo_gc_root_top < 0) __obo_gc_root_top = 0;
-}
-
-static int64_t obo_boxed_list_len(void* list_ptr) {
-    if (!list_ptr) {
-        return 0;
-    }
-    GCNode* node = gc_find_node(list_ptr);
-    if (node && node->kind == OBO_GC_MIXED_LIST) {
-        return ((OboMixedList*)list_ptr)->len;
-    }
-    return ((OboList*)list_ptr)->len;
-}
-
-void* obo_value_as_mixed_list_ptr(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v || v->tag != OBO_V_LIST || !v->u.ptr) {
-        return NULL;
-    }
-    GCNode* node = gc_find_node(v->u.ptr);
-    if (node && node->kind == OBO_GC_MIXED_LIST) {
-        return v->u.ptr;
-    }
-    OboList* list = (OboList*)v->u.ptr;
-    OboMixedList* mixed = (OboMixedList*)obo_mixed_list_new(list ? list->len : 0);
-    if (!mixed || !list) {
-        return mixed;
-    }
-    for (int64_t i = 0; i < list->len; i++) {
-        mixed->items[i].tag = OBO_V_I64;
-        mixed->items[i].u.i64 = list->items[i];
-    }
-    return mixed;
-}
-
-int64_t obo_value_len(void* p) {
-    OboValue* v = (OboValue*)p;
-    if (!v) {
-        return 0;
-    }
-    switch (v->tag) {
-        case OBO_V_STR:
-            return v->u.str ? (int64_t)strlen(v->u.str) : 0;
-        case OBO_V_LIST:
-            return obo_boxed_list_len(v->u.ptr);
-        case OBO_V_MAP:
-            return obo_map_len(v->u.ptr);
-        case OBO_V_NULL:
-            return 0;
-        default:
-            return 0;
-    }
-}
-
-int64_t obo_value_empty(void* p) {
-    return obo_value_len(p) == 0 ? 1 : 0;
-}
-
-typedef struct {
-    char* data;
-    size_t len;
-    size_t cap;
-} OboStringBuf;
-
-typedef struct {
-    const void** items;
-    size_t len;
-    size_t cap;
-} OboFormatSeen;
-
-static int obo_buf_reserve(OboStringBuf* buf, size_t extra) {
-    size_t need = buf->len + extra + 1;
-    if (need <= buf->cap) {
-        return 1;
-    }
-    size_t cap = buf->cap ? buf->cap : 64;
-    while (cap < need) {
-        cap *= 2;
-    }
-    char* next = (char*)realloc(buf->data, cap);
-    if (!next) {
-        return 0;
-    }
-    buf->data = next;
-    buf->cap = cap;
-    return 1;
-}
-
-static int obo_buf_append_n(OboStringBuf* buf, const char* text, size_t len) {
-    if (!obo_buf_reserve(buf, len)) {
-        return 0;
-    }
-    memcpy(buf->data + buf->len, text, len);
-    buf->len += len;
-    buf->data[buf->len] = 0;
-    return 1;
-}
-
-static int obo_buf_append(OboStringBuf* buf, const char* text) {
-    return obo_buf_append_n(buf, text, strlen(text));
-}
-
-static int obo_buf_append_char(OboStringBuf* buf, char ch) {
-    if (!obo_buf_reserve(buf, 1)) {
-        return 0;
-    }
-    buf->data[buf->len++] = ch;
-    buf->data[buf->len] = 0;
-    return 1;
-}
-
-static int obo_buf_append_i64(OboStringBuf* buf, int64_t value) {
-    char tmp[32];
-    int len = snprintf(tmp, sizeof(tmp), "%lld", (long long)value);
-    if (len < 0) {
-        return 0;
-    }
-    return obo_buf_append_n(buf, tmp, (size_t)len);
-}
-
-static int obo_buf_append_f64(OboStringBuf* buf, double value) {
-    char tmp[64];
-    int len;
-    if (value == (int64_t)value && fabs(value) < 1e15) {
-        len = snprintf(tmp, sizeof(tmp), "%.1f", value);
-    } else {
-        len = snprintf(tmp, sizeof(tmp), "%.15g", value);
-    }
-    if (len < 0) {
-        return 0;
-    }
-    return obo_buf_append_n(buf, tmp, (size_t)len);
-}
-
-static char* obo_buf_finish(OboStringBuf* buf) {
-    if (!buf->data) {
-        buf->data = (char*)malloc(1);
-        if (!buf->data) {
-            return NULL;
-        }
-        buf->data[0] = 0;
-        buf->cap = 1;
-    }
-    char* out = buf->data;
-    buf->data = NULL;
-    buf->len = 0;
-    buf->cap = 0;
-    return out;
-}
-
-static void obo_buf_dispose(OboStringBuf* buf) {
-    free(buf->data);
-    buf->data = NULL;
-    buf->len = 0;
-    buf->cap = 0;
-}
-
-static int obo_seen_contains(const OboFormatSeen* seen, const void* ptr) {
-    for (size_t i = 0; i < seen->len; i++) {
-        if (seen->items[i] == ptr) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int obo_seen_push(OboFormatSeen* seen, const void* ptr) {
-    if (seen->len >= seen->cap) {
-        size_t cap = seen->cap ? seen->cap * 2 : 16;
-        const void** next = (const void**)realloc(seen->items, cap * sizeof(void*));
-        if (!next) {
-            return 0;
-        }
-        seen->items = next;
-        seen->cap = cap;
-    }
-    seen->items[seen->len++] = ptr;
-    return 1;
-}
-
-static void obo_seen_pop(OboFormatSeen* seen) {
-    if (seen->len > 0) {
-        seen->len -= 1;
-    }
-}
-
-static void obo_seen_dispose(OboFormatSeen* seen) {
-    free(seen->items);
-    seen->items = NULL;
-    seen->len = 0;
-    seen->cap = 0;
-}
-
-static int obo_format_value_into(OboStringBuf* buf, const OboValue* value, OboFormatSeen* seen);
-
-static int obo_format_i64_list_into(OboStringBuf* buf, const OboList* list, OboFormatSeen* seen) {
-    if (!list) {
-        return obo_buf_append(buf, "[]");
-    }
-    if (obo_seen_contains(seen, list)) {
-        return obo_buf_append(buf, "<cycle>");
-    }
-    if (!obo_seen_push(seen, list) || !obo_buf_append_char(buf, '[')) {
-        return 0;
-    }
-    for (int64_t i = 0; i < list->len; i++) {
-        if (i > 0 && !obo_buf_append(buf, ", ")) {
-            return 0;
-        }
-        if (!obo_buf_append_i64(buf, list->items[i])) {
-            return 0;
-        }
-    }
-    obo_seen_pop(seen);
-    return obo_buf_append_char(buf, ']');
-}
-
-static int obo_format_mixed_list_into(
-    OboStringBuf* buf,
-    const OboMixedList* list,
-    OboFormatSeen* seen
-) {
-    if (!list) {
-        return obo_buf_append(buf, "[]");
-    }
-    if (obo_seen_contains(seen, list)) {
-        return obo_buf_append(buf, "<cycle>");
-    }
-    if (!obo_seen_push(seen, list) || !obo_buf_append_char(buf, '[')) {
-        return 0;
-    }
-    for (int64_t i = 0; i < list->len; i++) {
-        if (i > 0 && !obo_buf_append(buf, ", ")) {
-            return 0;
-        }
-        if (!obo_format_value_into(buf, &list->items[i], seen)) {
-            return 0;
-        }
-    }
-    obo_seen_pop(seen);
-    return obo_buf_append_char(buf, ']');
-}
-
-static int obo_format_list_ptr_into(OboStringBuf* buf, const void* list_ptr, OboFormatSeen* seen) {
-    if (!list_ptr) {
-        return obo_buf_append(buf, "[]");
-    }
-    GCNode* node = gc_find_node((void*)list_ptr);
-    if (node && node->kind == OBO_GC_MIXED_LIST) {
-        return obo_format_mixed_list_into(buf, (const OboMixedList*)list_ptr, seen);
-    }
-    return obo_format_i64_list_into(buf, (const OboList*)list_ptr, seen);
-}
-
-static int obo_format_map_into(OboStringBuf* buf, const OboMap* map, OboFormatSeen* seen) {
-    if (!map) {
-        return obo_buf_append(buf, "[]");
-    }
-    if (obo_seen_contains(seen, map)) {
-        return obo_buf_append(buf, "<cycle>");
-    }
-    if (!obo_seen_push(seen, map) || !obo_buf_append_char(buf, '[')) {
-        return 0;
-    }
-    int first = 1;
-    for (MapEntry* e = map->order_head; e; e = e->order_next) {
-        if (!first && !obo_buf_append(buf, ", ")) {
-            return 0;
-        }
-        first = 0;
-        if (!obo_buf_append(buf, e->key) || !obo_buf_append(buf, ": ")) {
-            return 0;
-        }
-        if (!obo_format_value_into(buf, &e->val, seen)) {
-            return 0;
-        }
-    }
-    obo_seen_pop(seen);
-    return obo_buf_append_char(buf, ']');
-}
-
-static int obo_format_entity_into(OboStringBuf* buf, const OboEntity* entity, OboFormatSeen* seen) {
-    if (!entity) {
-        return obo_buf_append(buf, "null");
-    }
-    if (obo_seen_contains(seen, entity)) {
-        return obo_buf_append(buf, "<cycle>");
-    }
-    /* Choice-style display: if entity has __variant, print as VariantName or VariantName(field1, field2) */
-    if (entity->fields) {
-        const char* variant_name = NULL;
-        int data_count = 0;
-        OboMap* m = entity->fields;
-        /* find __variant */
-        uint32_t vi = map_bucket(m, "__variant");
-        for (MapEntry* e = m->buckets[vi]; e; e = e->next) {
-            if (strcmp(e->key, "__variant") == 0 && e->val.tag == OBO_V_STR) {
-                variant_name = e->val.u.str;
-                break;
-            }
-        }
-        if (variant_name) {
-            /* count data fields (non-__variant) */
-            for (MapEntry* e = m->order_head; e; e = e->order_next) {
-                if (strcmp(e->key, "__variant") != 0) data_count++;
-            }
-            if (!obo_buf_append(buf, variant_name)) return 0;
-            if (data_count > 0) {
-                if (!obo_buf_append(buf, "(")) return 0;
-                if (!obo_seen_push(seen, entity)) return 0;
-                int first = 1;
-                for (MapEntry* e = m->order_head; e; e = e->order_next) {
-                    if (strcmp(e->key, "__variant") == 0) continue;
-                    if (!first && !obo_buf_append(buf, ", ")) return 0;
-                    first = 0;
-                    if (!obo_format_value_into(buf, &e->val, seen)) return 0;
-                }
-                obo_seen_pop(seen);
-                if (!obo_buf_append(buf, ")")) return 0;
-            }
-            return 1;
-        }
-    }
-    if (!obo_seen_push(seen, entity)
-        || !obo_buf_append(buf, entity->type_name ? entity->type_name : "?")
-        || !obo_buf_append(buf, " { ")) {
-        return 0;
-    }
-    int first = 1;
-    if (entity->fields) {
-        for (MapEntry* e = entity->fields->order_head; e; e = e->order_next) {
-            if (!first && !obo_buf_append(buf, "; ")) {
-                return 0;
-            }
-            first = 0;
-            if (!obo_buf_append(buf, e->key) || !obo_buf_append(buf, " = ")) {
-                return 0;
-            }
-            if (!obo_format_value_into(buf, &e->val, seen)) {
-                return 0;
-            }
-        }
-    }
-    obo_seen_pop(seen);
-    return obo_buf_append(buf, " }");
-}
-
-static int obo_format_value_into(OboStringBuf* buf, const OboValue* value, OboFormatSeen* seen) {
-    if (!value) {
-        return obo_buf_append(buf, "null");
-    }
-    switch (value->tag) {
-        case OBO_V_I64:
-            return obo_buf_append_i64(buf, value->u.i64);
-        case OBO_V_STR:
-            return obo_buf_append(buf, value->u.str ? value->u.str : "");
-        case OBO_V_LIST:
-            return obo_format_list_ptr_into(buf, value->u.ptr, seen);
-        case OBO_V_MAP:
-            return obo_format_map_into(buf, (const OboMap*)value->u.ptr, seen);
-        case OBO_V_ENTITY:
-            return obo_format_entity_into(buf, (const OboEntity*)value->u.ptr, seen);
-        case OBO_V_F64:
-            return obo_buf_append_f64(buf, value->u.f64);
-        case OBO_V_BOOL:
-            return obo_buf_append(buf, value->u.i64 ? "true" : "false");
-        case OBO_V_NULL:
-            return obo_buf_append(buf, "null");
-        default:
-            return obo_buf_append(buf, "?");
-    }
-}
-
-static char* obo_format_boxed_string(const OboValue* value) {
-    OboStringBuf buf = {0};
-    OboFormatSeen seen = {0};
-    if (!obo_format_value_into(&buf, value, &seen)) {
-        obo_buf_dispose(&buf);
-        obo_seen_dispose(&seen);
-        return NULL;
-    }
-    obo_seen_dispose(&seen);
-    return obo_buf_finish(&buf);
-}
-
-char* obo_format_list_string(void* list_ptr) {
-    OboValue value;
-    value.tag = OBO_V_LIST;
-    value.u.ptr = list_ptr;
-    return obo_format_boxed_string(&value);
-}
-
-char* obo_format_map_string(void* map_ptr) {
-    OboValue value;
-    value.tag = OBO_V_MAP;
-    value.u.ptr = map_ptr;
-    return obo_format_boxed_string(&value);
-}
-
-char* obo_format_entity_string(void* entity_ptr) {
-    OboValue value;
-    value.tag = OBO_V_ENTITY;
-    value.u.ptr = entity_ptr;
-    return obo_format_boxed_string(&value);
-}
-
-static void obo_print_owned_line(char* text) {
-    if (!text) {
-        printf("?\n");
-        return;
-    }
-    printf("%s\n", text);
-    free(text);
-}
-
-static void gc_enqueue_ptr(void*** q, size_t* qlen, size_t* qcap, void* p) {
-    if (!p) return;
-    if (*qlen >= *qcap) {
-        size_t nc = *qcap ? *qcap * 2 : 64;
-        void** nq = (void**)realloc(*q, nc * sizeof(void*));
-        if (!nq) return;
-        *q = nq;
-        *qcap = nc;
-    }
-    (*q)[(*qlen)++] = p;
-}
-
-static void gc_mark_obo_value_edges(const OboValue* v, void*** q, size_t* qlen, size_t* qcap) {
-    if (!v) return;
-    switch (v->tag) {
-        case OBO_V_LIST:
-        case OBO_V_MAP:
-        case OBO_V_ENTITY:
-            gc_enqueue_ptr(q, qlen, qcap, v->u.ptr);
-            break;
-        default:
-            break;
-    }
-}
-
-static void gc_mark_map_edges(OboMap* m, void*** q, size_t* qlen, size_t* qcap) {
-    if (!m) return;
-    for (MapEntry* e = m->order_head; e; e = e->order_next) {
-        gc_mark_obo_value_edges(&e->val, q, qlen, qcap);
-    }
-}
-
-static void gc_mark_phase(void) {
-    void** q = NULL;
-    size_t qlen = 0, qcap = 0;
-    for (int64_t i = 0; i < __obo_gc_root_top; i++) {
-        void** slot = __obo_gc_roots[i];
-        if (slot && *slot) gc_enqueue_ptr(&q, &qlen, &qcap, *slot);
-    }
-    for (OboTask* task = __obo_pending_tasks; task; task = task->next_pending) {
-        gc_enqueue_ptr(&q, &qlen, &qcap, task);
-    }
-    for (size_t i = 0; i < qlen; i++) {
-        void* p = q[i];
-        GCNode* n = gc_find_node(p);
-        if (!n || n->mark == 2) continue;
-        n->mark = 2;
-        switch (n->kind) {
-            case OBO_GC_ENTITY: {
-                OboEntity* e = (OboEntity*)p;
-                gc_mark_map_edges(e->fields, &q, &qlen, &qcap);
-                break;
-            }
-            case OBO_GC_MAP:
-                gc_mark_map_edges((OboMap*)p, &q, &qlen, &qcap);
-                break;
-            case OBO_GC_MIXED_LIST: {
-                OboMixedList* L = (OboMixedList*)p;
-                for (int64_t j = 0; j < L->len; j++) {
-                    gc_mark_obo_value_edges(&L->items[j], &q, &qlen, &qcap);
-                }
-                break;
-            }
-            case OBO_GC_VALUE:
-                gc_mark_obo_value_edges((OboValue*)p, &q, &qlen, &qcap);
-                break;
-            case OBO_GC_TASK: {
-                OboTask* task = (OboTask*)p;
-                gc_enqueue_ptr(&q, &qlen, &qcap, task->closure);
-                break;
-            }
-            case OBO_GC_STRING:
-            case OBO_GC_LIST_I64:
-            case OBO_GC_CLOSURE:
-            case OBO_GC_OPAQUE:
-            default:
-                break;
-        }
-    }
-    free(q);
-}
-
-static void obo_map_free_entries(OboMap* m) {
-    if (!m) return;
-    MapEntry* e = m->order_head;
-    while (e) {
-        MapEntry* next = e->order_next;
-        /* key is interned — do NOT free it */
-        if (e->val.tag == OBO_V_STR && e->val.u.str) {
-            free(e->val.u.str);
-        }
-        free(e);
-        e = next;
-    }
-    if (m->buckets) memset(m->buckets, 0, m->nbuckets * sizeof(MapEntry*));
-    m->order_head = NULL;
-    m->order_tail = NULL;
-    m->count = 0;
-}
-
-static void gc_free_object(GCNode* node) {
-    void* p = node->ptr;
-    switch (node->kind) {
-        case OBO_GC_STRING:
-            free(p);
-            break;
-        case OBO_GC_LIST_I64:
-            free(p);
-            break;
-        case OBO_GC_MAP: {
-            OboMap* map = (OboMap*)p;
-            obo_map_free_entries(map);
-            free(map->buckets);
-            free(p);
-            break;
-        }
-        case OBO_GC_ENTITY: {
-            OboEntity* e = (OboEntity*)p;
-            if (e->type_name) free(e->type_name);
-            if (e->fields) {
-                obo_map_free_entries(e->fields);
-                free(e->fields->buckets);
-                free(e->fields);
-            }
-            free(e);
-            break;
-        }
-        case OBO_GC_MIXED_LIST: {
-            OboMixedList* L = (OboMixedList*)p;
-            for (int64_t i = 0; i < L->len; i++) {
-                OboValue* v = &L->items[i];
-                if (v->tag == OBO_V_STR && v->u.str) free(v->u.str);
-            }
-            free(p);
-            break;
-        }
-        case OBO_GC_CLOSURE:
-            free(p);
-            break;
-        case OBO_GC_TASK:
-            free(p);
-            break;
-        case OBO_GC_VALUE:
-            obo_value_free(p);
-            break;
-        case OBO_GC_OPAQUE:
-        default:
-            free(p);
-            break;
-    }
-}
+/* Debug/Trace — no-ops for non-debug builds */
+void obo_frame_push(const char *name, int32_t line) { (void)name; (void)line; }
+void obo_frame_pop(void) {}
+void obo_print_stack_trace(void) {}
+void obo_install_signal_handlers(void) {}
+
+/* ═══════════════════════════════════════════════════════════
+ *  12. Stubs — tasks, events, channels, atomics, etc.
+ * ═══════════════════════════════════════════════════════════ */
+void *obo_event_listen(void *a, void *b, void *c) { (void)a; (void)b; (void)c; return NULL; }
+void *obo_event_emit(void *a, void *b, void *c)   { (void)a; (void)b; (void)c; return NULL; }
+void *obo_task_spawn(void *c)      { (void)c; return NULL; }
+void  obo_task_wait(void *t)       { (void)t; }
+void  obo_task_wait_all(void)      {}
+void *obo_channel_create(void)     { return NULL; }
+void  obo_channel_send(void *c, int64_t v) { (void)c; (void)v; }
+int64_t obo_channel_receive(void *c) { (void)c; return 0; }
+void *obo_atomic_create(int64_t v) { int64_t *a = (int64_t *)malloc(8); *a = v; return (void *)a; }
+int64_t obo_atomic_load(void *a)   { return *(int64_t *)a; }
+void  obo_atomic_store(void *a, int64_t v) { *(int64_t *)a = v; }
+int64_t obo_atomic_add(void *a, int64_t v) { *(int64_t *)a += v; return *(int64_t *)a; }
+int64_t obo_atomic_sub(void *a, int64_t v) { *(int64_t *)a -= v; return *(int64_t *)a; }
+
+void *obo_possible_push(void)       { return NULL; }
+int64_t obo_possible_pop(void)      { return 0; }
+void  obo_throw(const char *msg)    { fprintf(stderr, "obo_throw: %s\n", msg ? msg : "(null)"); exit(1); }
+void *obo_possible_get_error(void)  { return NULL; }
+
+void  obo_event_loop_run(void *a, void *b, void *c, int64_t d) { (void)a; (void)b; (void)c; (void)d; }
+void  obo_event_loop_stop(void) {}
+
+void  obo_arena_register(void *a) { (void)a; }
+void  obo_arena_free_all(void) {}
+void *obo_arena_create(int64_t sz) { return malloc(sz); }
+int64_t obo_arena_alloc(void *a, int64_t sz) { (void)a; return (int64_t)malloc(sz); }
+int64_t obo_arena_reset(void *a) { (void)a; return 0; }
+int64_t obo_arena_destroy(void *a) { free(a); return 0; }
+int64_t obo_arena_used(void *a) { (void)a; return 0; }
+int64_t obo_arena_capacity(void *a) { (void)a; return 0; }
+int64_t obo_arena_write_i64(int64_t addr, int64_t v) { *(int64_t *)addr = v; return addr + 8; }
+int64_t obo_arena_write_f64(int64_t addr, double v) { *(double *)addr = v; return addr + 8; }
+int64_t obo_arena_read_i64(int64_t addr) { return *(int64_t *)addr; }
+double  obo_arena_read_f64(int64_t addr) { return *(double *)addr; }
+
+/* Sets, queues, stacks, buffers, grids — stubs */
+void *obo_set_new(void *from)         { (void)from; return obo_map_new(); }
+void *obo_set_add(void *s, int64_t v) { (void)s; (void)v; return s; }
+void *obo_set_remove(void *s, int64_t v) { (void)v; return s; }
+int64_t obo_set_has(void *s, int64_t v) { (void)s; (void)v; return 0; }
+void *obo_set_union(void *a, void *b)     { (void)b; return a; }
+void *obo_set_intersect(void *a, void *b) { (void)b; return a; }
+void *obo_set_difference(void *a, void *b) { (void)b; return a; }
+void *obo_queue_push(void *q, int64_t v) { (void)q; (void)v; return q; }
+int64_t obo_queue_peek(void *q)          { (void)q; return 0; }
+void *obo_queue_pop(void *q)             { return q; }
+void *obo_stack_push(void *s, int64_t v) { (void)s; (void)v; return s; }
+int64_t obo_stack_peek(void *s)          { (void)s; return 0; }
+void *obo_stack_pop(void *s)             { return s; }
+void *obo_buffer_new(int64_t sz) { return calloc(1, sz * 8 + 16); }
+int64_t obo_buffer_length(void *b) { return b ? *(int64_t *)b : 0; }
+int64_t obo_buffer_get(void *b, int64_t i) { return *((int64_t *)b + 2 + i); }
+void *obo_buffer_set(void *b, int64_t i, int64_t v) { *((int64_t *)b + 2 + i) = v; return b; }
+void *obo_buffer_toList(void *b) { (void)b; return (void *)rt_list_new(0); }
+void *obo_textbuilder_new(int64_t cap) { (void)cap; return calloc(1, 1); }
+void *obo_textbuilder_append(void *tb, const char *s) { (void)tb; (void)s; return tb; }
+void *obo_textbuilder_appendChar(void *tb, int64_t c) { (void)tb; (void)c; return tb; }
+void *obo_textbuilder_appendInt(void *tb, int64_t n) { (void)tb; (void)n; return tb; }
+char *obo_textbuilder_build(void *tb) { (void)tb; return (char *)calloc(1, 1); }
+int64_t obo_textbuilder_length(void *tb) { (void)tb; return 0; }
+void *obo_textbuilder_clear(void *tb) { return tb; }
+char *obo_textbuilder_toString(void *tb) { return obo_textbuilder_build(tb); }
+void *obo_grid2d_new(int64_t r, int64_t c, int64_t v) { (void)v; return calloc(1, (r * c + 4) * 8); }
+int64_t obo_grid2d_rows(void *g) { (void)g; return 0; }
+int64_t obo_grid2d_cols(void *g) { (void)g; return 0; }
+int64_t obo_grid2d_count(void *g) { (void)g; return 0; }
+int64_t obo_grid2d_get(void *g, int64_t r, int64_t c) { (void)g; (void)r; (void)c; return 0; }
+void *obo_grid2d_set(void *g, int64_t r, int64_t c, int64_t v) { (void)r; (void)c; (void)v; return g; }
+void *obo_grid2d_fill(void *g, int64_t v) { (void)v; return g; }
+void *obo_grid2d_row(void *g, int64_t r) { (void)g; (void)r; return (void *)rt_list_new(0); }
+void *obo_grid2d_col(void *g, int64_t c) { (void)g; (void)c; return (void *)rt_list_new(0); }
+void *obo_grid2d_toList(void *g) { (void)g; return (void *)rt_list_new(0); }
+void *obo_grid3d_new(int64_t x, int64_t y, int64_t z, int64_t v) { (void)v; return calloc(1, (x * y * z + 8) * 8); }
+int64_t obo_grid3d_x(void *g) { (void)g; return 0; }
+int64_t obo_grid3d_y(void *g) { (void)g; return 0; }
+int64_t obo_grid3d_z(void *g) { (void)g; return 0; }
+int64_t obo_grid3d_count(void *g) { (void)g; return 0; }
+int64_t obo_grid3d_get(void *g, int64_t x, int64_t y, int64_t z) { (void)g; (void)x; (void)y; (void)z; return 0; }
+void *obo_grid3d_set(void *g, int64_t x, int64_t y, int64_t z, int64_t v) { (void)x; (void)y; (void)z; (void)v; return g; }
+void *obo_grid3d_fill(void *g, int64_t v) { (void)v; return g; }
+void *obo_grid3d_toList(void *g) { (void)g; return (void *)rt_list_new(0); }
+
+/* ═══════════════════════════════════════════════════════════
+ *  Dispatch — generated per-compile, appended after this.
+ * ═══════════════════════════════════════════════════════════ */
+/* obo_entity_type_name: needed by dispatch */
+const char *obo_entity_type_name(void *e) {
+    return (const char *)rt_entity_type_name((int64_t)e);
+}
+
+/* --- generated native method dispatch is appended by 'obo build' --- */
 
-void obo_gc_collect(void) {
-    gc_mark_phase();
-    GCNode** pp = &__obo_gc_head;
-    while (*pp) {
-        GCNode* node = *pp;
-        if (!node->mark) {
-            *pp = node->next;
-            gc_ht_remove(node);
-            gc_free_object(node);
-            free(node);
-            __obo_gc_alloc_count--;
-        } else {
-            node->mark = 0;
-            pp = &node->next;
-        }
-    }
-}
-
-void obo_gc_pause(void) { __obo_gc_paused = 1; }
-void obo_gc_resume(void) { __obo_gc_paused = 0; }
-
-static void obo_gc_register_impl(void* ptr, int kind) {
-    if (!ptr) return;
-    GCNode* n = (GCNode*)malloc(sizeof(GCNode));
-    if (!n) return;
-    n->ptr = ptr;
-    n->mark = 1;
-    n->kind = (uint8_t)kind;
-    /* Insert into sweep list */
-    n->next = __obo_gc_head;
-    __obo_gc_head = n;
-    /* Insert into hash table */
-    uint32_t h = gc_ptr_hash(ptr);
-    n->ht_next = __obo_gc_ht[h];
-    __obo_gc_ht[h] = n;
-    __obo_gc_alloc_count++;
-    if (!__obo_gc_paused && __obo_gc_alloc_count > __obo_gc_threshold) {
-        obo_gc_collect();
-        if (__obo_gc_alloc_count > __obo_gc_threshold / 2) {
-            __obo_gc_threshold *= 2;
-        }
-    }
-}
-
-/* Unknown / legacy allocations — no interior pointers (conservative) */
-void obo_arena_register(void* ptr) { obo_gc_register_impl(ptr, OBO_GC_OPAQUE); }
-
-/* Final cleanup: free every tracked object regardless of marks */
-void obo_arena_free_all(void) {
-    GCNode* n = __obo_gc_head;
-    while (n) {
-        GCNode* next = n->next;
-        gc_free_object(n);
-        free(n);
-        n = next;
-    }
-    __obo_gc_head = NULL;
-    __obo_gc_alloc_count = 0;
-    __obo_gc_root_top = 0;
-    __obo_pending_tasks = NULL;
-    memset(__obo_gc_ht, 0, sizeof(__obo_gc_ht));
-}
-
-/* --- Closures --- */
-typedef struct {
-    void* fn_ptr;
-    int32_t num_captures;
-    int64_t captures[];
-} OboClosure;
-
-void* obo_closure_new(void* fn_ptr, int64_t num_captures) {
-    size_t sz = sizeof(OboClosure) + (size_t)num_captures * sizeof(int64_t);
-    OboClosure* c = (OboClosure*)malloc(sz);
-    c->fn_ptr = fn_ptr;
-    c->num_captures = (int32_t)num_captures;
-    memset(c->captures, 0, (size_t)num_captures * sizeof(int64_t));
-    obo_gc_register_impl(c, OBO_GC_CLOSURE);
-    return c;
-}
-
-void obo_closure_set_capture(void* cp, int64_t idx, int64_t val) {
-    OboClosure* c = (OboClosure*)cp;
-    if (idx >= 0 && idx < c->num_captures) c->captures[idx] = val;
-}
-
-int64_t obo_closure_get_capture(void* cp, int64_t idx) {
-    OboClosure* c = (OboClosure*)cp;
-    if (idx >= 0 && idx < c->num_captures) return c->captures[idx];
-    return 0;
-}
-
-/* Closure call trampolines: fn(closure_self, args...) */
-typedef int64_t (*closure_fn_0)(void*);
-typedef int64_t (*closure_fn_1)(void*, int64_t);
-typedef int64_t (*closure_fn_2)(void*, int64_t, int64_t);
-
-int64_t obo_closure_call_0(void* cp) {
-    OboClosure* c = (OboClosure*)cp;
-    closure_fn_0 fn = (closure_fn_0)c->fn_ptr;
-    return fn(cp);
-}
-
-int64_t obo_closure_call_1(void* cp, int64_t a0) {
-    OboClosure* c = (OboClosure*)cp;
-    closure_fn_1 fn = (closure_fn_1)c->fn_ptr;
-    return fn(cp, a0);
-}
-
-int64_t obo_closure_call_2(void* cp, int64_t a0, int64_t a1) {
-    OboClosure* c = (OboClosure*)cp;
-    closure_fn_2 fn = (closure_fn_2)c->fn_ptr;
-    return fn(cp, a0, a1);
-}
-
-typedef int64_t (*closure_fn_3)(void*, int64_t, int64_t, int64_t);
-
-int64_t obo_closure_call_3(void* cp, int64_t a0, int64_t a1, int64_t a2) {
-    OboClosure* c = (OboClosure*)cp;
-    closure_fn_3 fn = (closure_fn_3)c->fn_ptr;
-    return fn(cp, a0, a1, a2);
-}
-
-/* --- Events --- */
-
-void* obo_event_listen(void* entity_ptr, const char* event_name, void* closure) {
-    if (!entity_ptr || !event_name || !closure) return NULL;
-    OboEntity* e = (OboEntity*)entity_ptr;
-    if (!e->fields) return NULL;
-
-    /* Build the key __evt_<event_name> */
-    char key[256];
-    snprintf(key, sizeof(key), "__evt_%s", event_name);
-
-    /* Look up existing listener list */
-    OboMap* m = e->fields;
-    uint32_t h = map_bucket(m, key);
-    OboList* listeners = NULL;
-    for (MapEntry* me = m->buckets[h]; me; me = me->next) {
-        if (strcmp(me->key, key) == 0 && me->val.tag == OBO_V_LIST) {
-            listeners = (OboList*)me->val.u.ptr;
-            break;
-        }
-    }
-
-    if (!listeners) {
-        listeners = obo_alloc_list(0);
-    }
-
-    /* Append the closure to the list */
-    int64_t old_len = listeners->len;
-    OboList* grown = obo_alloc_list(old_len + 1);
-    for (int64_t i = 0; i < old_len; i++) {
-        grown->items[i] = listeners->items[i];
-    }
-    grown->items[old_len] = (int64_t)(intptr_t)closure;
-
-    /* Store back */
-    OboValue nv;
-    nv.tag = OBO_V_LIST;
-    nv.u.ptr = grown;
-    map_insert(m, key, nv);
-    return NULL;
-}
-
-void* obo_event_emit(void* entity_ptr, const char* event_name, void* args_list) {
-    if (!entity_ptr || !event_name) return NULL;
-    OboEntity* e = (OboEntity*)entity_ptr;
-    if (!e->fields) return NULL;
-
-    char key[256];
-    snprintf(key, sizeof(key), "__evt_%s", event_name);
-
-    OboMap* m = e->fields;
-    uint32_t h = map_bucket(m, key);
-    OboList* listeners = NULL;
-    for (MapEntry* me = m->buckets[h]; me; me = me->next) {
-        if (strcmp(me->key, key) == 0 && me->val.tag == OBO_V_LIST) {
-            listeners = (OboList*)me->val.u.ptr;
-            break;
-        }
-    }
-    if (!listeners) return NULL;
-
-    OboList* args = (OboList*)args_list;
-    int64_t argc = args ? args->len : 0;
-
-    for (int64_t i = 0; i < listeners->len; i++) {
-        void* closure = (void*)(intptr_t)listeners->items[i];
-        if (!closure) continue;
-        switch (argc) {
-            case 0: obo_closure_call_0(closure); break;
-            case 1: obo_closure_call_1(closure, args->items[0]); break;
-            case 2: obo_closure_call_2(closure, args->items[0], args->items[1]); break;
-            case 3: obo_closure_call_3(closure, args->items[0], args->items[1], args->items[2]); break;
-            default: break; /* extend as needed */
-        }
-    }
-    return NULL;
-}
-
-static void* obo_task_thread_fn(void* arg) {
-    OboTask* task = (OboTask*)arg;
-    if (task && task->closure) {
-        obo_closure_call_0(task->closure);
-    }
-    return NULL;
-}
-
-void* obo_task_spawn(void* closure) {
-    OboTask* task = (OboTask*)malloc(sizeof(OboTask));
-    if (!task) return NULL;
-    task->closure = closure;
-    task->joined = 0;
-    task->next_pending = __obo_pending_tasks;
-    __obo_pending_tasks = task;
-    obo_gc_register_impl(task, OBO_GC_TASK);
-    pthread_create(&task->thread, NULL, obo_task_thread_fn, task);
-    return task;
-}
-
-void obo_task_wait(void* task_ptr) {
-    OboTask* task = (OboTask*)task_ptr;
-    if (!task || task->joined) return;
-    pthread_join(task->thread, NULL);
-    task->joined = 1;
-}
-
-void obo_task_wait_all(void) {
-    OboTask* t = __obo_pending_tasks;
-    while (t) {
-        if (!t->joined) {
-            pthread_join(t->thread, NULL);
-            t->joined = 1;
-        }
-        t = t->next_pending;
-    }
-}
-
-/* --- Channels --- */
-typedef struct OboChannel {
-    pthread_mutex_t mutex;
-    pthread_cond_t  not_empty;
-    int64_t* buffer;
-    int64_t  len;
-    int64_t  cap;
-} OboChannel;
-
-void* obo_channel_create(void) {
-    OboChannel* ch = (OboChannel*)malloc(sizeof(OboChannel));
-    if (!ch) return NULL;
-    pthread_mutex_init(&ch->mutex, NULL);
-    pthread_cond_init(&ch->not_empty, NULL);
-    ch->buffer = NULL;
-    ch->len = 0;
-    ch->cap = 0;
-    return ch;
-}
-
-void obo_channel_send(void* chp, int64_t value) {
-    OboChannel* ch = (OboChannel*)chp;
-    if (!ch) return;
-    pthread_mutex_lock(&ch->mutex);
-    if (ch->len >= ch->cap) {
-        int64_t new_cap = ch->cap < 8 ? 8 : ch->cap * 2;
-        ch->buffer = (int64_t*)realloc(ch->buffer, (size_t)new_cap * sizeof(int64_t));
-        ch->cap = new_cap;
-    }
-    ch->buffer[ch->len++] = value;
-    pthread_cond_signal(&ch->not_empty);
-    pthread_mutex_unlock(&ch->mutex);
-}
-
-int64_t obo_channel_receive(void* chp) {
-    OboChannel* ch = (OboChannel*)chp;
-    if (!ch) return 0;
-    pthread_mutex_lock(&ch->mutex);
-    while (ch->len == 0) {
-        pthread_cond_wait(&ch->not_empty, &ch->mutex);
-    }
-    int64_t value = ch->buffer[0];
-    ch->len--;
-    for (int64_t i = 0; i < ch->len; i++) {
-        ch->buffer[i] = ch->buffer[i + 1];
-    }
-    pthread_mutex_unlock(&ch->mutex);
-    return value;
-}
-
-/* --- Atomics --- */
-typedef struct OboAtomic {
-    volatile int64_t value;
-} OboAtomic;
-
-void* obo_atomic_create(int64_t initial) {
-    OboAtomic* a = (OboAtomic*)malloc(sizeof(OboAtomic));
-    if (!a) return NULL;
-    __atomic_store_n(&a->value, initial, __ATOMIC_SEQ_CST);
-    return a;
-}
-
-int64_t obo_atomic_load(void* ap) {
-    OboAtomic* a = (OboAtomic*)ap;
-    if (!a) return 0;
-    return __atomic_load_n(&a->value, __ATOMIC_SEQ_CST);
-}
-
-void obo_atomic_store(void* ap, int64_t val) {
-    OboAtomic* a = (OboAtomic*)ap;
-    if (!a) return;
-    __atomic_store_n(&a->value, val, __ATOMIC_SEQ_CST);
-}
-
-int64_t obo_atomic_add(void* ap, int64_t delta) {
-    OboAtomic* a = (OboAtomic*)ap;
-    if (!a) return 0;
-    return __atomic_add_fetch(&a->value, delta, __ATOMIC_SEQ_CST);
-}
-
-int64_t obo_atomic_sub(void* ap, int64_t delta) {
-    OboAtomic* a = (OboAtomic*)ap;
-    if (!a) return 0;
-    return __atomic_sub_fetch(&a->value, delta, __ATOMIC_SEQ_CST);
-}
-
-/* --- Callback list methods --- */
-void* obo_list_filter(void* lp, void* cp) {
-    OboList* list = (OboList*)lp;
-    OboClosure* c = (OboClosure*)cp;
-    closure_fn_1 fn = (closure_fn_1)c->fn_ptr;
-    int64_t count = 0;
-    for (int64_t i = 0; i < list->len; i++) {
-        if (fn(cp, list->items[i]) != 0) count++;
-    }
-    OboList* result = (OboList*)malloc(sizeof(OboList) + (size_t)count * sizeof(int64_t));
-    result->len = count;
-    result->cap = count;
-    int64_t j = 0;
-    for (int64_t i = 0; i < list->len; i++) {
-        if (fn(cp, list->items[i]) != 0) result->items[j++] = list->items[i];
-    }
-    obo_gc_register_impl(result, OBO_GC_LIST_I64);
-    return result;
-}
-
-void* obo_list_map(void* lp, void* cp) {
-    OboList* list = (OboList*)lp;
-    OboClosure* c = (OboClosure*)cp;
-    closure_fn_1 fn = (closure_fn_1)c->fn_ptr;
-    OboList* result = (OboList*)malloc(sizeof(OboList) + (size_t)list->len * sizeof(int64_t));
-    result->len = list->len;
-    result->cap = list->len;
-    for (int64_t i = 0; i < list->len; i++) {
-        result->items[i] = fn(cp, list->items[i]);
-    }
-    obo_gc_register_impl(result, OBO_GC_LIST_I64);
-    return result;
-}
-
-int64_t obo_list_reduce(void* lp, int64_t initial, void* cp) {
-    OboList* list = (OboList*)lp;
-    OboClosure* c = (OboClosure*)cp;
-    closure_fn_2 fn = (closure_fn_2)c->fn_ptr;
-    int64_t acc = initial;
-    for (int64_t i = 0; i < list->len; i++) {
-        acc = fn(cp, acc, list->items[i]);
-    }
-    return acc;
-}
-
-int64_t obo_list_any(void* lp, void* cp) {
-    OboList* list = (OboList*)lp;
-    OboClosure* c = (OboClosure*)cp;
-    closure_fn_1 fn = (closure_fn_1)c->fn_ptr;
-    for (int64_t i = 0; i < list->len; i++) {
-        if (fn(cp, list->items[i]) != 0) return 1;
-    }
-    return 0;
-}
-
-int64_t obo_list_all(void* lp, void* cp) {
-    OboList* list = (OboList*)lp;
-    OboClosure* c = (OboClosure*)cp;
-    closure_fn_1 fn = (closure_fn_1)c->fn_ptr;
-    for (int64_t i = 0; i < list->len; i++) {
-        if (fn(cp, list->items[i]) == 0) return 0;
-    }
-    return 1;
-}
-
-/* ── Buffer (byte array) ─────────────────────────────── */
-typedef struct {
-    int64_t len;
-    int64_t cap;
-    uint8_t* data;
-} OboBuffer;
-
-void* obo_buffer_new(int64_t size) {
-    OboBuffer* b = (OboBuffer*)malloc(sizeof(OboBuffer));
-    b->len = size < 0 ? 0 : size;
-    b->cap = b->len;
-    b->data = (uint8_t*)calloc(b->len, 1);
-    return b;
-}
-
-int64_t obo_buffer_length(void* bp) {
-    OboBuffer* b = (OboBuffer*)bp;
-    if (!b) return 0;
-    return b->len;
-}
-
-int64_t obo_buffer_get(void* bp, int64_t idx) {
-    OboBuffer* b = (OboBuffer*)bp;
-    if (!b || idx < 0 || idx >= b->len) return 0;
-    return (int64_t)b->data[idx];
-}
-
-void* obo_buffer_set(void* bp, int64_t idx, int64_t val) {
-    OboBuffer* b = (OboBuffer*)bp;
-    /* Return a new buffer with the byte set */
-    OboBuffer* nb = (OboBuffer*)malloc(sizeof(OboBuffer));
-    nb->len = b ? b->len : 0;
-    nb->cap = nb->len;
-    nb->data = (uint8_t*)malloc(nb->len);
-    if (b && b->data) memcpy(nb->data, b->data, nb->len);
-    if (idx >= 0 && idx < nb->len) nb->data[idx] = (uint8_t)(val & 0xFF);
-    return nb;
-}
-
-void* obo_buffer_toList(void* bp) {
-    OboBuffer* b = (OboBuffer*)bp;
-    if (!b || b->len == 0) return obo_list_new_i64(0, NULL);
-    int64_t* items = (int64_t*)malloc(sizeof(int64_t) * b->len);
-    for (int64_t i = 0; i < b->len; i++) items[i] = (int64_t)b->data[i];
-    void* list = obo_list_new_i64(b->len, items);
-    free(items);
-    return list;
-}
-
-/* Bag methods — bag is just an OboList, so reuse list functions */
-void* obo_bag_add(void* lp, int64_t val) {
-    return obo_list_add(lp, val);
-}
-
-int64_t obo_bag_has(void* lp, int64_t val) {
-    OboList* L = (OboList*)lp;
-    if (!L) return 0;
-    for (int64_t i = 0; i < L->len; i++) {
-        if (L->items[i] == val) return 1;
-    }
-    return 0;
-}
-
-void* obo_bag_remove(void* lp, int64_t val) {
-    OboList* L = (OboList*)lp;
-    if (!L || L->len == 0) return obo_list_new_i64(0, NULL);
-    /* Find first occurrence and skip it */
-    int64_t found = -1;
-    for (int64_t i = 0; i < L->len; i++) {
-        if (L->items[i] == val) { found = i; break; }
-    }
-    if (found < 0) return lp; /* not found, return same list */
-    int64_t new_len = L->len - 1;
-    int64_t* items = (int64_t*)malloc(sizeof(int64_t) * (new_len > 0 ? new_len : 1));
-    int64_t j = 0;
-    for (int64_t i = 0; i < L->len; i++) {
-        if (i != found) items[j++] = L->items[i];
-    }
-    void* result = obo_list_new_i64(new_len, items);
-    free(items);
-    return result;
-}
-
-/* ── Grid2D ──────────────────────────────────────────── */
-typedef struct {
-    int64_t rows;
-    int64_t cols;
-    int64_t* data;
-} OboGrid2D;
-
-void* obo_grid2d_new(int64_t rows, int64_t cols, int64_t fill) {
-    OboGrid2D* g = (OboGrid2D*)malloc(sizeof(OboGrid2D));
-    g->rows = rows;
-    g->cols = cols;
-    int64_t total = rows * cols;
-    g->data = (int64_t*)malloc(sizeof(int64_t) * total);
-    for (int64_t i = 0; i < total; i++) g->data[i] = fill;
-    return g;
-}
-
-int64_t obo_grid2d_rows(void* gp) { return ((OboGrid2D*)gp)->rows; }
-int64_t obo_grid2d_cols(void* gp) { return ((OboGrid2D*)gp)->cols; }
-int64_t obo_grid2d_count(void* gp) { OboGrid2D* g = (OboGrid2D*)gp; return g->rows * g->cols; }
-
-int64_t obo_grid2d_get(void* gp, int64_t r, int64_t c) {
-    OboGrid2D* g = (OboGrid2D*)gp;
-    if (r < 0 || r >= g->rows || c < 0 || c >= g->cols) return 0;
-    return g->data[r * g->cols + c];
-}
-
-void* obo_grid2d_set(void* gp, int64_t r, int64_t c, int64_t val) {
-    OboGrid2D* g = (OboGrid2D*)gp;
-    int64_t total = g->rows * g->cols;
-    OboGrid2D* ng = (OboGrid2D*)malloc(sizeof(OboGrid2D));
-    ng->rows = g->rows;
-    ng->cols = g->cols;
-    ng->data = (int64_t*)malloc(sizeof(int64_t) * total);
-    memcpy(ng->data, g->data, sizeof(int64_t) * total);
-    if (r >= 0 && r < ng->rows && c >= 0 && c < ng->cols) {
-        ng->data[r * ng->cols + c] = val;
-    }
-    return ng;
-}
-
-void* obo_grid2d_fill(void* gp, int64_t val) {
-    OboGrid2D* g = (OboGrid2D*)gp;
-    return obo_grid2d_new(g->rows, g->cols, val);
-}
-
-void* obo_grid2d_row(void* gp, int64_t r) {
-    OboGrid2D* g = (OboGrid2D*)gp;
-    if (r < 0 || r >= g->rows) return obo_list_new_i64(0, NULL);
-    return obo_list_new_i64(g->cols, g->data + r * g->cols);
-}
-
-void* obo_grid2d_col(void* gp, int64_t c) {
-    OboGrid2D* g = (OboGrid2D*)gp;
-    if (c < 0 || c >= g->cols) return obo_list_new_i64(0, NULL);
-    int64_t* items = (int64_t*)malloc(sizeof(int64_t) * g->rows);
-    for (int64_t i = 0; i < g->rows; i++) items[i] = g->data[i * g->cols + c];
-    void* list = obo_list_new_i64(g->rows, items);
-    free(items);
-    return list;
-}
-
-void* obo_grid2d_toList(void* gp) {
-    OboGrid2D* g = (OboGrid2D*)gp;
-    return obo_list_new_i64(g->rows * g->cols, g->data);
-}
-
-/* ── Grid3D ──────────────────────────────────────────── */
-typedef struct {
-    int64_t x, y, z;
-    int64_t* data;
-} OboGrid3D;
-
-void* obo_grid3d_new(int64_t x, int64_t y, int64_t z, int64_t fill) {
-    OboGrid3D* g = (OboGrid3D*)malloc(sizeof(OboGrid3D));
-    g->x = x; g->y = y; g->z = z;
-    int64_t total = x * y * z;
-    g->data = (int64_t*)malloc(sizeof(int64_t) * total);
-    for (int64_t i = 0; i < total; i++) g->data[i] = fill;
-    return g;
-}
-
-int64_t obo_grid3d_x(void* gp) { return ((OboGrid3D*)gp)->x; }
-int64_t obo_grid3d_y(void* gp) { return ((OboGrid3D*)gp)->y; }
-int64_t obo_grid3d_z(void* gp) { return ((OboGrid3D*)gp)->z; }
-int64_t obo_grid3d_count(void* gp) { OboGrid3D* g = (OboGrid3D*)gp; return g->x * g->y * g->z; }
-
-int64_t obo_grid3d_get(void* gp, int64_t gx, int64_t gy, int64_t gz) {
-    OboGrid3D* g = (OboGrid3D*)gp;
-    if (gx < 0 || gx >= g->x || gy < 0 || gy >= g->y || gz < 0 || gz >= g->z) return 0;
-    return g->data[gx * g->y * g->z + gy * g->z + gz];
-}
-
-void* obo_grid3d_set(void* gp, int64_t gx, int64_t gy, int64_t gz, int64_t val) {
-    OboGrid3D* g = (OboGrid3D*)gp;
-    int64_t total = g->x * g->y * g->z;
-    OboGrid3D* ng = (OboGrid3D*)malloc(sizeof(OboGrid3D));
-    ng->x = g->x; ng->y = g->y; ng->z = g->z;
-    ng->data = (int64_t*)malloc(sizeof(int64_t) * total);
-    memcpy(ng->data, g->data, sizeof(int64_t) * total);
-    if (gx >= 0 && gx < ng->x && gy >= 0 && gy < ng->y && gz >= 0 && gz < ng->z) {
-        ng->data[gx * ng->y * ng->z + gy * ng->z + gz] = val;
-    }
-    return ng;
-}
-
-void* obo_grid3d_fill(void* gp, int64_t val) {
-    OboGrid3D* g = (OboGrid3D*)gp;
-    return obo_grid3d_new(g->x, g->y, g->z, val);
-}
-
-void* obo_grid3d_toList(void* gp) {
-    OboGrid3D* g = (OboGrid3D*)gp;
-    return obo_list_new_i64(g->x * g->y * g->z, g->data);
-}
-
-/* ============================================================
-   Assert
-   ============================================================ */
-
-void* obo_assert_fail(void* msg) {
-    /* msg is a char* string from the IR */
-    const char* s = (const char*)msg;
-    if (s && *s) {
-        fprintf(stderr, "Obo: %s 💥\n", s);
-    } else {
-        fprintf(stderr, "Obo: Assertion failed 💥\n");
-    }
-    exit(1);
-    return NULL; /* unreachable */
-}
-
-/* ============================================================
-   Reflect — returns a list of {name, value, type} maps
-   ============================================================ */
-
-void* obo_reflect(void* obj) {
-    if (!obj) {
-        return obo_mixed_list_new(0);
-    }
-    /* Check if obj is a GC-tracked entity; if not, return empty list */
-    GCNode* node = gc_find_node(obj);
-    if (!node || node->kind != OBO_GC_ENTITY) {
-        return obo_mixed_list_new(0);
-    }
-    /* obj is an OboEntity* — extract type_name and fields map */
-    OboEntity* entity = (OboEntity*)obj;
-    OboMap* m = entity->fields;
-    if (!m) {
-        return obo_mixed_list_new(0);
-    }
-
-    /* Count total fields by iterating buckets */
-    int64_t total = 1 + m->count; /* 1 for __type entry */
-    OboMixedList* result = (OboMixedList*)obo_mixed_list_new(total);
-    int64_t idx = 0;
-
-    /* First entry: __type */
-    {
-        OboMap* type_entry = obo_map_alloc_empty();
-        obo_gc_register_impl(type_entry, OBO_GC_MAP);
-        obo_map_put_str(type_entry, "name", "__type");
-        obo_map_put_str(type_entry, "value", entity->type_name ? entity->type_name : "unknown");
-        obo_map_put_str(type_entry, "type", "text");
-        result->items[idx].tag = OBO_V_MAP;
-        result->items[idx].u.ptr = type_entry;
-        idx++;
-    }
-
-    /* Iterate fields in insertion order */
-    for (MapEntry* e = m->order_head; e && idx < total; e = e->order_next) {
-        OboMap* entry = obo_map_alloc_empty();
-        obo_gc_register_impl(entry, OBO_GC_MAP);
-        obo_map_put_str(entry, "name", e->key);
-
-        switch (e->val.tag) {
-            case OBO_V_I64:
-                obo_map_put_i64(entry, "value", e->val.u.i64);
-                obo_map_put_str(entry, "type", "number");
-                break;
-            case OBO_V_F64:
-                obo_map_put_f64(entry, "value", e->val.u.f64);
-                obo_map_put_str(entry, "type", "decimal");
-                break;
-            case OBO_V_STR:
-                obo_map_put_str(entry, "value", e->val.u.str);
-                obo_map_put_str(entry, "type", "text");
-                break;
-            case OBO_V_BOOL:
-                obo_map_put_bool(entry, "value", e->val.u.i64);
-                obo_map_put_str(entry, "type", "flag");
-                break;
-            case OBO_V_NULL:
-                obo_map_put_null(entry, "value");
-                obo_map_put_str(entry, "type", "null");
-                break;
-            case OBO_V_LIST:
-                obo_map_put_list(entry, "value", e->val.u.ptr);
-                obo_map_put_str(entry, "type", "list");
-                break;
-            case OBO_V_MAP:
-                obo_map_put_map(entry, "value", e->val.u.ptr);
-                obo_map_put_str(entry, "type", "map");
-                break;
-            case OBO_V_ENTITY:
-                obo_map_put_entity(entry, "value", e->val.u.ptr);
-                obo_map_put_str(entry, "type", "entity");
-                break;
-            default:
-                obo_map_put_null(entry, "value");
-                obo_map_put_str(entry, "type", "unknown");
-                break;
-        }
-        result->items[idx].tag = OBO_V_MAP;
-        result->items[idx].u.ptr = entry;
-        idx++;
-    }
-    return result;
-}
 
 /* --- generated native method dispatch (obo build) --- */
 

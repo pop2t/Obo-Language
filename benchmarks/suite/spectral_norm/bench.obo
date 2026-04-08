@@ -1,0 +1,76 @@
+/// OBO Speed Benchmark: Spectral Norm
+/// Tests: floating-point arithmetic, nested loops, Math.sqrt, --no-gc
+/// Classic Benchmarks Game problem — computes spectral norm of infinite matrix
+
+use Math;
+
+function eval_A(i, j)
+{
+    out 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1);
+}
+
+function eval_A_times_u(u, n, au)
+{
+    count(i = 0, n)
+    {
+        sum = 0.0;
+        count(j = 0, n)
+        {
+            sum = sum + eval_A(i, j) * u[j];
+        }
+        au[i] = sum;
+    }
+}
+
+function eval_At_times_u(u, n, atu)
+{
+    count(i = 0, n)
+    {
+        sum = 0.0;
+        count(j = 0, n)
+        {
+            sum = sum + eval_A(j, i) * u[j];
+        }
+        atu[i] = sum;
+    }
+}
+
+function eval_AtA_times_u(u, n, atau)
+{
+    v = [];
+    count(i = 0, n) { v.add(0.0); }
+    eval_A_times_u(u, n, v);
+    eval_At_times_u(v, n, atau);
+}
+
+function main()
+{
+    n = 1000;
+
+    u = [];
+    v = [];
+    count(i = 0, n)
+    {
+        u.add(1.0);
+        v.add(0.0);
+    }
+
+    count(i = 0, 10)
+    {
+        eval_AtA_times_u(u, n, v);
+        eval_AtA_times_u(v, n, u);
+    }
+
+    vBv = 0.0;
+    vv = 0.0;
+    count(i = 0, n)
+    {
+        vBv = vBv + u[i] * v[i];
+        vv = vv + v[i] * v[i];
+    }
+
+    result = Math.sqrt(vBv / vv);
+    show "Spectral norm: " + result;
+}
+
+main();

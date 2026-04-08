@@ -1,0 +1,27 @@
+/// Test handle type + bridge — GPU resource lifecycle pattern
+
+bridge "gpu_mock"
+{
+    function mock_create_device() out handle;
+    function mock_destroy_device(dev as handle) out i64;
+    function mock_create_buffer(dev as handle, size as i64) out handle;
+    function mock_destroy_buffer(buf as handle) out i64;
+}
+
+function main() {
+    metal {
+        // Create a GPU device (returns opaque handle)
+        dev = mock_create_device();
+        defer { mock_destroy_device(dev); }
+
+        // Create a buffer on the device
+        buf = mock_create_buffer(dev, 4096);
+        defer { mock_destroy_buffer(buf); }
+
+        show "device and buffer created";
+        // handles are opaque — no show, no arithmetic
+        // defer ensures proper cleanup in reverse order
+    }
+
+    show "done — handles released via defer";
+}

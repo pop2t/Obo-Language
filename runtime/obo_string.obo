@@ -1,0 +1,564 @@
+// OBO Self-Hosted Runtime — String Operations (Tier 0)
+//
+// All strings are null-terminated byte arrays (C-compatible).
+// Every function takes raw pointer (i64) arguments.
+// Memory is allocated via pointer.alloc (malloc) — caller or GC frees.
+
+// ── String length ──
+// Returns the number of bytes before the null terminator.
+@export("i64")
+function rt_strlen(s as number)
+{
+    if (s == 0) { out 0; }
+    n = 0;
+    forever
+    {
+        ch = mem.load8(s + n);
+        if (ch == 0) { out n; }
+        n = n + 1;
+    }
+}
+
+// ── String compare ──
+// Returns 0 if equal, <0 if a<b, >0 if a>b (byte-by-byte).
+@export("i64")
+function rt_strcmp(a as number, b as number)
+{
+    if (a == b) { out 0; }
+    if (a == 0) { out 0 - 1; }
+    if (b == 0) { out 1; }
+    i = 0;
+    forever
+    {
+        ca = mem.load8(a + i);
+        cb = mem.load8(b + i);
+        if (ca != cb) { out ca - cb; }
+        if (ca == 0) { out 0; }
+        i = i + 1;
+    }
+}
+
+// ── String copy ──
+// Copies bytes from src to dst (including null terminator).
+// Returns dst.
+@export("i64")
+function rt_strcpy(dst as number, src as number)
+{
+    if (src == 0) { out dst; }
+    i = 0;
+    forever
+    {
+        ch = mem.load8(src + i);
+        mem.store8(dst + i, ch);
+        if (ch == 0) { out dst; }
+        i = i + 1;
+    }
+}
+
+// ── String duplicate ──
+// Allocates a new string and copies src into it.
+@export("i64")
+function rt_strdup(src as number)
+{
+    if (src == 0) { out 0; }
+    len = rt_strlen(src);
+    buf = pointer.alloc(len + 1);
+    if (buf == 0) { out 0; }
+    mem.copy(buf, src, len + 1);
+    out buf;
+}
+
+// ── String concatenate ──
+// Returns a newly allocated string: a + b.
+@export("i64")
+function rt_str_concat(a as number, b as number)
+{
+    la = rt_strlen(a);
+    lb = rt_strlen(b);
+    buf = pointer.alloc(la + lb + 1);
+    if (buf == 0) { out 0; }
+    if (la > 0) { mem.copy(buf, a, la); }
+    if (lb > 0) { mem.copy(buf + la, b, lb); }
+    mem.store8(buf + la + lb, 0);
+    out buf;
+}
+
+// ── Integer to string ──
+// Converts an i64 to a decimal string. Returns a newly allocated string.
+@export("i64")
+function rt_i64_to_str(n as number)
+{
+    // Handle zero
+    if (n == 0)
+    {
+        buf = pointer.alloc(2);
+        mem.store8(buf, 48);
+        mem.store8(buf + 1, 0);
+        out buf;
+    }
+
+    // Work buffer (max 20 digits + sign + null = 22)
+    tmp = pointer.alloc(22);
+
+    // Handle negative
+    neg = 0;
+    val = n;
+    if (val < 0)
+    {
+        neg = 1;
+        val = 0 - val;
+    }
+
+    // Fill digits in reverse
+    pos = 21;
+    mem.store8(tmp + pos, 0);
+    forever
+    {
+        if (val == 0) { stop; }
+        pos = pos - 1;
+        digit = val - ((val / 10) * 10);
+        mem.store8(tmp + pos, 48 + digit);
+        val = val / 10;
+    }
+
+    // Add minus sign
+    if (neg == 1)
+    {
+        pos = pos - 1;
+        mem.store8(tmp + pos, 45);
+    }
+
+    // Copy to tight allocation
+    len = 21 - pos;
+    result = pointer.alloc(len + 1);
+    mem.copy(result, tmp + pos, len + 1);
+    pointer.free(tmp);
+    out result;
+}
+
+// ── String truthiness ──
+// Returns 1 if string is non-null and non-empty, 0 otherwise.
+@export("i64")
+function rt_str_truthy(s as number)
+{
+    if (s == 0) { out 0; }
+    ch = mem.load8(s);
+    if (ch == 0) { out 0; }
+    out 1;
+}
+
+// ── String contains ──
+// Returns 1 if haystack contains needle, 0 otherwise.
+@export("i64")
+function rt_str_contains(haystack as number, needle as number)
+{
+    if (haystack == 0) { out 0; }
+    if (needle == 0) { out 1; }
+    nlen = rt_strlen(needle);
+    if (nlen == 0) { out 1; }
+    hlen = rt_strlen(haystack);
+    if (nlen > hlen) { out 0; }
+
+    i = 0;
+    limit = hlen - nlen;
+    forever
+    {
+        if (i > limit) { out 0; }
+        // Compare nlen bytes starting at haystack+i vs needle
+        j = 0;
+        matched = 1;
+        forever
+        {
+            if (j >= nlen) { stop; }
+            ca = mem.load8(haystack + i + j);
+            cb = mem.load8(needle + j);
+            if (ca != cb)
+            {
+                matched = 0;
+                stop;
+            }
+            j = j + 1;
+        }
+        if (matched == 1) { out 1; }
+        i = i + 1;
+    }
+}
+
+// ── String indexOf ──
+// Returns the byte offset of needle in haystack, or -1 if not found.
+@export("i64")
+function rt_str_indexOf(haystack as number, needle as number)
+{
+    if (haystack == 0) { out 0 - 1; }
+    if (needle == 0) { out 0; }
+    nlen = rt_strlen(needle);
+    if (nlen == 0) { out 0; }
+    hlen = rt_strlen(haystack);
+    if (nlen > hlen) { out 0 - 1; }
+
+    i = 0;
+    limit = hlen - nlen;
+    forever
+    {
+        if (i > limit) { out 0 - 1; }
+        j = 0;
+        matched = 1;
+        forever
+        {
+            if (j >= nlen) { stop; }
+            ca = mem.load8(haystack + i + j);
+            cb = mem.load8(needle + j);
+            if (ca != cb)
+            {
+                matched = 0;
+                stop;
+            }
+            j = j + 1;
+        }
+        if (matched == 1) { out i; }
+        i = i + 1;
+    }
+}
+
+// ── Substring ──
+// Returns a new string from s[start..end) (byte indices).
+@export("i64")
+function rt_str_substring(s as number, start as number, end as number)
+{
+    if (s == 0) { out 0; }
+    slen = rt_strlen(s);
+
+    // Clamp
+    lo = start;
+    hi = end;
+    if (lo < 0) { lo = 0; }
+    if (hi > slen) { hi = slen; }
+    if (lo >= hi)
+    {
+        buf = pointer.alloc(1);
+        mem.store8(buf, 0);
+        out buf;
+    }
+
+    n = hi - lo;
+    buf = pointer.alloc(n + 1);
+    mem.copy(buf, s + lo, n);
+    mem.store8(buf + n, 0);
+    out buf;
+}
+
+// ── String starts with ──
+@export("i64")
+function rt_str_startsWith(s as number, prefix as number)
+{
+    if (s == 0) { out 0; }
+    if (prefix == 0) { out 1; }
+    plen = rt_strlen(prefix);
+    if (plen == 0) { out 1; }
+    slen = rt_strlen(s);
+    if (plen > slen) { out 0; }
+
+    i = 0;
+    forever
+    {
+        if (i >= plen) { out 1; }
+        ca = mem.load8(s + i);
+        cb = mem.load8(prefix + i);
+        if (ca != cb) { out 0; }
+        i = i + 1;
+    }
+}
+
+// ── String ends with ──
+@export("i64")
+function rt_str_endsWith(s as number, suffix as number)
+{
+    if (s == 0) { out 0; }
+    if (suffix == 0) { out 1; }
+    xlen = rt_strlen(suffix);
+    if (xlen == 0) { out 1; }
+    slen = rt_strlen(s);
+    if (xlen > slen) { out 0; }
+
+    offset = slen - xlen;
+    i = 0;
+    forever
+    {
+        if (i >= xlen) { out 1; }
+        ca = mem.load8(s + offset + i);
+        cb = mem.load8(suffix + i);
+        if (ca != cb) { out 0; }
+        i = i + 1;
+    }
+}
+
+// ── To upper case (ASCII only) ──
+@export("i64")
+function rt_str_upper(s as number)
+{
+    if (s == 0) { out 0; }
+    len = rt_strlen(s);
+    buf = pointer.alloc(len + 1);
+    i = 0;
+    forever
+    {
+        if (i >= len) { stop; }
+        ch = mem.load8(s + i);
+        // 'a' = 97, 'z' = 122
+        if (ch >= 97)
+        {
+            if (ch <= 122) { ch = ch - 32; }
+        }
+        mem.store8(buf + i, ch);
+        i = i + 1;
+    }
+    mem.store8(buf + len, 0);
+    out buf;
+}
+
+// ── To lower case (ASCII only) ──
+@export("i64")
+function rt_str_lower(s as number)
+{
+    if (s == 0) { out 0; }
+    len = rt_strlen(s);
+    buf = pointer.alloc(len + 1);
+    i = 0;
+    forever
+    {
+        if (i >= len) { stop; }
+        ch = mem.load8(s + i);
+        // 'A' = 65, 'Z' = 90
+        if (ch >= 65)
+        {
+            if (ch <= 90) { ch = ch + 32; }
+        }
+        mem.store8(buf + i, ch);
+        i = i + 1;
+    }
+    mem.store8(buf + len, 0);
+    out buf;
+}
+
+// ── Trim whitespace (both ends) ──
+// Whitespace: space (32), tab (9), newline (10), carriage return (13)
+@export("i64")
+function rt_str_trim(s as number)
+{
+    if (s == 0) { out 0; }
+    len = rt_strlen(s);
+    if (len == 0)
+    {
+        buf = pointer.alloc(1);
+        mem.store8(buf, 0);
+        out buf;
+    }
+
+    // Find start
+    lo = 0;
+    forever
+    {
+        if (lo >= len) { stop; }
+        ch = mem.load8(s + lo);
+        if (ch != 32)
+        {
+            if (ch != 9)
+            {
+                if (ch != 10)
+                {
+                    if (ch != 13) { stop; }
+                }
+            }
+        }
+        lo = lo + 1;
+    }
+
+    // Find end
+    hi = len;
+    forever
+    {
+        if (hi <= lo) { stop; }
+        ch = mem.load8(s + hi - 1);
+        if (ch != 32)
+        {
+            if (ch != 9)
+            {
+                if (ch != 10)
+                {
+                    if (ch != 13) { stop; }
+                }
+            }
+        }
+        hi = hi - 1;
+    }
+
+    n = hi - lo;
+    buf = pointer.alloc(n + 1);
+    if (n > 0) { mem.copy(buf, s + lo, n); }
+    mem.store8(buf + n, 0);
+    out buf;
+}
+
+// ── String repeat ──
+// Returns a new string that is s repeated count times.
+@export("i64")
+function rt_str_repeat(s as number, times as number)
+{
+    if (s == 0) { out 0; }
+    if (times <= 0)
+    {
+        buf = pointer.alloc(1);
+        mem.store8(buf, 0);
+        out buf;
+    }
+    len = rt_strlen(s);
+    total = len * times;
+    buf = pointer.alloc(total + 1);
+    i = 0;
+    forever
+    {
+        if (i >= times) { stop; }
+        mem.copy(buf + (i * len), s, len);
+        i = i + 1;
+    }
+    mem.store8(buf + total, 0);
+    out buf;
+}
+
+// ── String reversed ──
+@export("i64")
+function rt_str_reversed(s as number)
+{
+    if (s == 0) { out 0; }
+    len = rt_strlen(s);
+    buf = pointer.alloc(len + 1);
+    i = 0;
+    forever
+    {
+        if (i >= len) { stop; }
+        ch = mem.load8(s + len - 1 - i);
+        mem.store8(buf + i, ch);
+        i = i + 1;
+    }
+    mem.store8(buf + len, 0);
+    out buf;
+}
+
+// ── String replace (first occurrence) ──
+// Replaces the first occurrence of 'old_s' with 'new_s' in s.
+@export("i64")
+function rt_str_replace(s as number, old_s as number, new_s as number)
+{
+    if (s == 0) { out 0; }
+    slen = rt_strlen(s);
+    flen = rt_strlen(old_s);
+    tlen = rt_strlen(new_s);
+
+    if (flen == 0)
+    {
+        out rt_strdup(s);
+    }
+
+    // Find first occurrence
+    idx = rt_str_indexOf(s, old_s);
+    if (idx < 0)
+    {
+        out rt_strdup(s);
+    }
+
+    // New length = slen - flen + tlen
+    newlen = slen - flen + tlen;
+    buf = pointer.alloc(newlen + 1);
+
+    // Copy prefix
+    if (idx > 0) { mem.copy(buf, s, idx); }
+    // Copy replacement
+    if (tlen > 0) { mem.copy(buf + idx, new_s, tlen); }
+    // Copy suffix
+    rest = slen - idx - flen;
+    if (rest > 0) { mem.copy(buf + idx + tlen, s + idx + flen, rest); }
+    mem.store8(buf + newlen, 0);
+    out buf;
+}
+
+// ── String replace all ──
+// Replaces all occurrences of 'old_s' with 'new_s' in s.
+@export("i64")
+function rt_str_replace_all(s as number, old_s as number, new_s as number)
+{
+    if (s == 0) { out 0; }
+    flen = rt_strlen(old_s);
+    if (flen == 0) { out rt_strdup(s); }
+
+    // Count occurrences first
+    slen = rt_strlen(s);
+    tlen = rt_strlen(new_s);
+    cnt = 0;
+    pos = 0;
+    forever
+    {
+        if (pos > slen - flen) { stop; }
+        j = 0;
+        matched = 1;
+        forever
+        {
+            if (j >= flen) { stop; }
+            ca = mem.load8(s + pos + j);
+            cb = mem.load8(old_s + j);
+            if (ca != cb) { matched = 0; stop; }
+            j = j + 1;
+        }
+        if (matched == 1)
+        {
+            cnt = cnt + 1;
+            pos = pos + flen;
+        }
+        if (matched != 1) { pos = pos + 1; }
+    }
+
+    if (cnt == 0) { out rt_strdup(s); }
+
+    // Allocate result
+    newlen = slen + cnt * (tlen - flen);
+    buf = pointer.alloc(newlen + 1);
+
+    // Build result
+    src_pos = 0;
+    dst_pos = 0;
+    forever
+    {
+        if (src_pos >= slen) { stop; }
+        // Check for match at src_pos
+        can_match = 0;
+        if (src_pos + flen <= slen) { can_match = 1; }
+        found = 0;
+        if (can_match == 1)
+        {
+            j = 0;
+            found = 1;
+            forever
+            {
+                if (j >= flen) { stop; }
+                ca = mem.load8(s + src_pos + j);
+                cb = mem.load8(old_s + j);
+                if (ca != cb) { found = 0; stop; }
+                j = j + 1;
+            }
+        }
+        if (found == 1)
+        {
+            if (tlen > 0) { mem.copy(buf + dst_pos, new_s, tlen); }
+            dst_pos = dst_pos + tlen;
+            src_pos = src_pos + flen;
+        }
+        if (found != 1)
+        {
+            ch = mem.load8(s + src_pos);
+            mem.store8(buf + dst_pos, ch);
+            dst_pos = dst_pos + 1;
+            src_pos = src_pos + 1;
+        }
+    }
+    mem.store8(buf + newlen, 0);
+    out buf;
+}

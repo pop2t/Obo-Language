@@ -1,0 +1,23 @@
+// Bare-metal freestanding example.
+// Build: obo build examples/native_freestanding.obo --freestanding --emit-ll --no-link
+
+@export("void")
+function setup()
+{
+    x = 42;
+    y = x * 2;
+    out y;
+}
+
+@interrupt
+function timer_isr()
+{
+    n = 1;
+    out n;
+}
+
+@export("i32")
+function add(a as number, b as number)
+{
+    out a + b;
+}

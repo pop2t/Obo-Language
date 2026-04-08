@@ -1,0 +1,169 @@
+// OBO Self-Hosted Runtime — Memory Allocator (Tier 0)
+//
+// Free-list allocator with 8-byte alignment. All allocator state
+// is stored inside the heap itself (no globals needed).
+//
+// Heap layout:
+//   base[0..8]  = free_list head pointer (i64)
+//   base[8..]   = first block header + payload blocks
+//
+// Block header (8 bytes): (payload_size << 1) | free_bit
+//   Bit 0 = 1 if free, 0 if allocated
+//   Bits [63:1] = payload size in bytes
+//
+// Free blocks store a next-pointer in their first 8 payload bytes.
+//
+// API: every function takes `heap` (base address) as first arg.
+//   obo_heap_init(heap, size)          — initialize heap region
+//   obo_heap_alloc(heap, size)         — returns pointer or 0 (OOM)
+//   obo_heap_free(heap, ptr)           — free a block
+//   obo_heap_realloc(heap, ptr, size)  — grow/shrink
+
+// ── Initialize ──
+@export("void")
+function obo_heap_init(heap as number, size as number)
+{
+    // First 8 bytes: free_list head → points to the single free block's payload
+    // Block header starts at heap + 8, payload at heap + 16
+    payload_size = size - 16;
+    header_val = (payload_size * 2) bitor 1;
+
+    // Write block header at heap + 8
+    mem.store64(heap + 8, header_val);
+
+    // Null next-pointer in the free block payload (heap + 16)
+    mem.store64(heap + 16, 0);
+
+    // Free list head → heap + 16 (first payload)
+    mem.store64(heap, heap + 16);
+}
+
+// ── Allocate ──
+@export("i64")
+function obo_heap_alloc(heap as number, req_size as number)
+{
+    // Minimum 8, align up to 8
+    size = req_size;
+    if (size < 8)
+    {
+        size = 8;
+    }
+    rem = size & 7;
+    if (rem != 0)
+    {
+        size = size + (8 - rem);
+    }
+
+    // Walk the free list
+    prev_link = heap;
+    curr = mem.load64(heap);
+
+    forever
+    {
+        if (curr == 0)
+        {
+            out 0;
+        }
+
+        hdr_addr = curr - 8;
+        hdr_val = mem.load64(hdr_addr);
+        block_size = hdr_val >> 1;
+
+        if (block_size >= size)
+        {
+            // Can we split?
+            if (block_size >= size + 16)
+            {
+                // Split
+                new_hdr_addr = curr + size;
+                new_payload = new_hdr_addr + 8;
+                remaining = block_size - size - 8;
+
+                new_hdr = (remaining * 2) bitor 1;
+                mem.store64(new_hdr_addr, new_hdr);
+
+                next_free = mem.load64(curr);
+                mem.store64(new_payload, next_free);
+
+                // Mark current as allocated
+                mem.store64(hdr_addr, size * 2);
+
+                // Patch prev link → new_payload
+                mem.store64(prev_link, new_payload);
+
+                out curr;
+            }
+
+            // No split — use whole block
+            next_free = mem.load64(curr);
+            mem.store64(hdr_addr, block_size * 2);
+            mem.store64(prev_link, next_free);
+
+            out curr;
+        }
+
+        // Too small — advance
+        prev_link = curr;
+        curr = mem.load64(curr);
+    }
+}
+
+// ── Free ──
+@export("void")
+function obo_heap_free(heap as number, ptr as number)
+{
+    if (ptr == 0)
+    {
+        out 0;
+    }
+
+    hdr_addr = ptr - 8;
+    hdr_val = mem.load64(hdr_addr);
+    block_size = hdr_val >> 1;
+
+    // Mark free
+    mem.store64(hdr_addr, (block_size * 2) bitor 1);
+
+    // Prepend to free list (LIFO)
+    old_head = mem.load64(heap);
+    mem.store64(ptr, old_head);
+    mem.store64(heap, ptr);
+}
+
+// ── Realloc ──
+@export("i64")
+function obo_heap_realloc(heap as number, ptr as number, new_size as number)
+{
+    if (ptr == 0)
+    {
+        out obo_heap_alloc(heap, new_size);
+    }
+
+    hdr_addr = ptr - 8;
+    hdr_val = mem.load64(hdr_addr);
+    old_size = hdr_val >> 1;
+
+    if (new_size <= old_size)
+    {
+        out ptr;
+    }
+
+    new_ptr = obo_heap_alloc(heap, new_size);
+    if (new_ptr == 0)
+    {
+        out 0;
+    }
+
+    // Copy (8 bytes at a time)
+    i = 0;
+    forever
+    {
+        if (i >= old_size) { stop; }
+        word = mem.load64(ptr + i);
+        mem.store64(new_ptr + i, word);
+        i = i + 8;
+    }
+
+    obo_heap_free(heap, ptr);
+    out new_ptr;
+}

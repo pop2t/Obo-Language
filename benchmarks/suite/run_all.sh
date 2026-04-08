@@ -17,7 +17,7 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
-BENCHMARKS=("fibonacci" "binary_trees" "nbody" "map_stress" "database_heavy")
+BENCHMARKS=("fibonacci" "binary_trees" "nbody" "map_stress" "database_heavy" "sieve" "mandelbrot" "spectral_norm")
 WARMUP=2
 RUNS=10
 
@@ -29,13 +29,14 @@ echo ""
 
 # ── Detect available toolchains ──────────────────────────
 
-HAS_OBO=0; HAS_PYTHON=0; HAS_CSHARP=0; HAS_NODE=0; HAS_CPP=0; HAS_HYPERFINE=0
+HAS_OBO=0; HAS_PYTHON=0; HAS_CSHARP=0; HAS_NODE=0; HAS_CPP=0; HAS_RUST=0; HAS_HYPERFINE=0
 
 command -v obo &>/dev/null && HAS_OBO=1
 command -v python3 &>/dev/null && HAS_PYTHON=1
 command -v dotnet &>/dev/null && HAS_CSHARP=1
 command -v node &>/dev/null && HAS_NODE=1
 command -v g++ &>/dev/null && HAS_CPP=1
+command -v rustc &>/dev/null && HAS_RUST=1
 command -v hyperfine &>/dev/null && HAS_HYPERFINE=1
 
 echo -e "${CYAN}Toolchain check:${NC}"
@@ -44,6 +45,7 @@ echo -e "${CYAN}Toolchain check:${NC}"
 [ "$HAS_CSHARP" = "1" ] && echo -e "  dotnet:    ${GREEN}.NET $(dotnet --version 2>&1)${NC}" || echo -e "  dotnet:    ${RED}not found${NC}"
 [ "$HAS_NODE" = "1" ] && echo -e "  node:      ${GREEN}$(node --version 2>&1)${NC}" || echo -e "  node:      ${RED}not found${NC}"
 [ "$HAS_CPP" = "1" ] && echo -e "  g++:       ${GREEN}$(g++ --version 2>&1 | head -1)${NC}" || echo -e "  g++:       ${RED}not found${NC}"
+[ "$HAS_RUST" = "1" ] && echo -e "  rustc:     ${GREEN}$(rustc --version 2>&1)${NC}" || echo -e "  rustc:     ${RED}not found${NC}"
 [ "$HAS_HYPERFINE" = "1" ] && echo -e "  hyperfine: ${GREEN}$(hyperfine --version 2>&1)${NC}" || echo -e "  hyperfine: ${RED}not found (using fallback timing)${NC}"
 echo ""
 
@@ -94,10 +96,20 @@ outputs_match() {
 for bench in "${BENCHMARKS[@]}"; do
     echo -e "  ${BOLD}$bench${NC}"
 
-    # OBO Native
+    # OBO Native (C runtime)
     if [ "$HAS_OBO" = "1" ]; then
         echo -n "    OBO Native... "
         if obo build "$SUITE_DIR/$bench/bench.obo" -o "$BUILD_DIR/${bench}_obo" 2>/dev/null; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${RED}FAIL${NC}"
+        fi
+    fi
+
+    # OBO OBO (self-hosted runtime)
+    if [ "$HAS_OBO" = "1" ]; then
+        echo -n "    OBO OBO... "
+        if obo build "$SUITE_DIR/$bench/bench.obo" --runtime obo -o "$BUILD_DIR/${bench}_obo_obo" 2>/dev/null; then
             echo -e "${GREEN}OK${NC}"
         else
             echo -e "${RED}FAIL${NC}"
@@ -118,6 +130,16 @@ for bench in "${BENCHMARKS[@]}"; do
     if [ "$HAS_CPP" = "1" ] && [ -f "$SUITE_DIR/$bench/bench.cpp" ]; then
         echo -n "    C++... "
         if g++ -O2 -std=c++17 "$SUITE_DIR/$bench/bench.cpp" -o "$BUILD_DIR/${bench}_cpp" -lm 2>/dev/null; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${RED}FAIL${NC}"
+        fi
+    fi
+
+    # Rust
+    if [ "$HAS_RUST" = "1" ] && [ -f "$SUITE_DIR/$bench/bench.rs" ]; then
+        echo -n "    Rust... "
+        if rustc -O "$SUITE_DIR/$bench/bench.rs" -o "$BUILD_DIR/${bench}_rust" 2>/dev/null; then
             echo -e "${GREEN}OK${NC}"
         else
             echo -e "${RED}FAIL${NC}"
@@ -148,6 +170,11 @@ run_benchmark() {
         names+=("OBO Native")
     fi
 
+    if [ "$HAS_OBO" = "1" ] && [ -f "$BUILD_DIR/${bench_name}_obo_obo" ]; then
+        cmds+=("$BUILD_DIR/${bench_name}_obo_obo")
+        names+=("OBO OBO")
+    fi
+
     if [ "$HAS_OBO" = "1" ] && [ "${SKIP_INTERP:-0}" = "0" ]; then
         cmds+=("obo run $bench_dir/bench.obo")
         names+=("OBO Interp")
@@ -174,6 +201,11 @@ run_benchmark() {
     if [ "$HAS_CPP" = "1" ] && [ -f "$BUILD_DIR/${bench_name}_cpp" ]; then
         cmds+=("$BUILD_DIR/${bench_name}_cpp")
         names+=("C++")
+    fi
+
+    if [ "$HAS_RUST" = "1" ] && [ -f "$BUILD_DIR/${bench_name}_rust" ]; then
+        cmds+=("$BUILD_DIR/${bench_name}_rust")
+        names+=("Rust")
     fi
 
     if [ ${#cmds[@]} -eq 0 ]; then

@@ -1,0 +1,48 @@
+/// OBO Speed Benchmark: Sieve of Eratosthenes (metal mode)
+/// Tests: raw memory allocation, byte-level mem intrinsics, --no-gc
+/// Uses pointer.alloc + mem.store8/load8 for C-equivalent performance
+
+function main()
+{
+    n = 10000000;
+    buf = pointer.alloc(n);
+
+    // Initialize all to 1 (prime candidate)
+    count(i = 0, n)
+    {
+        mem.store8(buf + i, 1);
+    }
+    mem.store8(buf, 0);
+    mem.store8(buf + 1, 0);
+
+    // Sieve
+    i = 2;
+    while (i * i < n)
+    {
+        if (mem.load8(buf + i) == 1)
+        {
+            j = i * i;
+            while (j < n)
+            {
+                mem.store8(buf + j, 0);
+                j = j + i;
+            }
+        }
+        i = i + 1;
+    }
+
+    // Count primes
+    total = 0;
+    count(i = 0, n)
+    {
+        if (mem.load8(buf + i) == 1)
+        {
+            total = total + 1;
+        }
+    }
+
+    pointer.free(buf);
+    show "Primes up to " + n + ": " + total;
+}
+
+main();

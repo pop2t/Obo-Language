@@ -53,8 +53,19 @@ pub enum TokenKind {
     KwByte,
     KwBits,
     KwPointer,
+    KwHandle,
     KwAtomic,
     KwNull,
+    KwI8,
+    KwI16,
+    KwI32,
+    KwI64,
+    KwU8,
+    KwU16,
+    KwU32,
+    KwU64,
+    KwF32,
+    KwF64,
 
     // --- Boolean literals ---
     KwTrue,
@@ -63,6 +74,7 @@ pub enum TokenKind {
     // --- Declaration keywords ---
     KwFunction,
     KwEntity,
+    KwPacked,
     KwActor,
     KwChoice,
     KwTrait,
@@ -132,6 +144,9 @@ pub enum TokenKind {
     KwMetal,
     KwBridge,
     KwGc,
+    KwDefer,
+    KwOwn,
+    KwAsm,
 
     // --- Concurrency ---
     KwRun,
@@ -154,6 +169,7 @@ pub enum TokenKind {
     // --- Other ---
     KwAssert,
     KwReflect,
+    KwBitOr,
 
     // --- Operators ---
     Plus,
@@ -172,6 +188,11 @@ pub enum TokenKind {
     Pipe,     // |>
     Dot,
     Ellipsis,
+    Ampersand,    // &
+    Caret,        // ^
+    Tilde,        // ~
+    LessLess,     // <<
+    GreaterGreater, // >>
 
     // --- Delimiters ---
     LeftParen,
@@ -205,8 +226,19 @@ impl TokenKind {
             "byte" => Some(TokenKind::KwByte),
             "bits" => Some(TokenKind::KwBits),
             "pointer" => Some(TokenKind::KwPointer),
+            "handle" => Some(TokenKind::KwHandle),
             "atomic" => Some(TokenKind::KwAtomic),
             "null" => Some(TokenKind::KwNull),
+            "i8" => Some(TokenKind::KwI8),
+            "i16" => Some(TokenKind::KwI16),
+            "i32" => Some(TokenKind::KwI32),
+            "i64" => Some(TokenKind::KwI64),
+            "u8" => Some(TokenKind::KwU8),
+            "u16" => Some(TokenKind::KwU16),
+            "u32" => Some(TokenKind::KwU32),
+            "u64" => Some(TokenKind::KwU64),
+            "f32" => Some(TokenKind::KwF32),
+            "f64" => Some(TokenKind::KwF64),
 
             // Booleans
             "true" => Some(TokenKind::KwTrue),
@@ -215,6 +247,7 @@ impl TokenKind {
             // Declarations
             "function" => Some(TokenKind::KwFunction),
             "entity" => Some(TokenKind::KwEntity),
+            "packed" => Some(TokenKind::KwPacked),
             "actor" => Some(TokenKind::KwActor),
             "choice" => Some(TokenKind::KwChoice),
             "trait" => Some(TokenKind::KwTrait),
@@ -284,6 +317,9 @@ impl TokenKind {
             "metal" => Some(TokenKind::KwMetal),
             "bridge" => Some(TokenKind::KwBridge),
             "gc" => Some(TokenKind::KwGc),
+            "defer" => Some(TokenKind::KwDefer),
+            "own" => Some(TokenKind::KwOwn),
+            "asm" => Some(TokenKind::KwAsm),
 
             // Concurrency
             "run" => Some(TokenKind::KwRun),
@@ -306,6 +342,7 @@ impl TokenKind {
             // Other
             "assert" => Some(TokenKind::KwAssert),
             "inspect" => Some(TokenKind::KwReflect),
+            "bitor" => Some(TokenKind::KwBitOr),
 
             _ => None,
         }

@@ -121,16 +121,63 @@ impl Checker {
                         .with_hint("Conditions must evaluate to true or false"),
                     );
                 }
+
+                // Null-narrowing: detect `if (x is null)` / `if (x is not null)`
+                let null_check = Self::extract_null_check(&i.condition);
+
+                // If condition is `x is not null`, narrow x inside then-body
+                if let Some((ref var_name, false)) = null_check {
+                    if let Some(inner) = self.unwrap_nullable(var_name) {
+                        self.symbols.push_scope();
+                        // Temporarily narrow the variable type
+                        if let Some(sym) = self.symbols.lookup_mut(var_name) {
+                            sym.ty = inner;
+                        }
+                        self.check_statements(&i.then_body);
+                        let locals = self.symbols.pop_scope();
+                        self.check_unused_variables(&locals);
+
+                        if let Some(ref else_body) = i.else_body {
+                            self.symbols.push_scope();
+                            self.check_statements(else_body);
+                            let locals = self.symbols.pop_scope();
+                            self.check_unused_variables(&locals);
+                        }
+                        // Skip the rest — we already handled this if
+                        return;
+                    }
+                }
+
                 self.symbols.push_scope();
                 self.check_statements(&i.then_body);
                 let locals = self.symbols.pop_scope();
                 self.check_unused_variables(&locals);
 
                 if let Some(ref else_body) = i.else_body {
+                    // If condition is `x is null`, narrow x inside else-body
+                    if let Some((ref var_name, true)) = null_check {
+                        if let Some(inner) = self.unwrap_nullable(var_name) {
+                            if let Some(sym) = self.symbols.lookup_mut(var_name) {
+                                sym.ty = inner;
+                            }
+                        }
+                    }
                     self.symbols.push_scope();
                     self.check_statements(else_body);
                     let locals = self.symbols.pop_scope();
                     self.check_unused_variables(&locals);
+                }
+
+                // If condition is `x is null` and then-body always exits,
+                // narrow x for code after the if.
+                if let Some((ref var_name, true)) = null_check {
+                    if Self::body_always_exits(&i.then_body) {
+                        if let Some(inner) = self.unwrap_nullable(var_name) {
+                            if let Some(sym) = self.symbols.lookup_mut(var_name) {
+                                sym.ty = inner;
+                            }
+                        }
+                    }
                 }
             }
             Statement::While(w) => {
@@ -311,11 +358,31 @@ impl Checker {
                 self.symbols.pop_scope();
             }
             Statement::Block(stmts)
-            | Statement::SafeBlock(stmts, _)
-            | Statement::MetalBlock(stmts, _) => {
+            | Statement::SafeBlock(stmts, _) => {
                 self.symbols.push_scope();
                 self.check_statements(stmts);
                 self.symbols.pop_scope();
+            }
+            Statement::MetalBlock(stmts, _) => {
+                let was_metal = self.in_metal;
+                self.in_metal = true;
+                self.symbols.push_scope();
+                self.check_statements(stmts);
+                self.symbols.pop_scope();
+                self.in_metal = was_metal;
+            }
+            Statement::Defer(body, span) => {
+                if !self.in_metal {
+                    self.errors.push(
+                        OboError::new(
+                            ErrorKind::InvalidOperation,
+                            "defer is only allowed inside metal blocks",
+                            *span,
+                        )
+                        .with_hint("Wrap this code in a metal { } block to use defer."),
+                    );
+                }
+                self.check_statements(body);
             }
             Statement::Wait(w) => {
                 if w.is_wait_for_all {
@@ -429,6 +496,55 @@ impl Checker {
                     )),
                 );
             }
+        }
+    }
+
+    /// Extract a null-check pattern from a condition expression.
+    /// Returns `Some((var_name, is_null_check))` where `is_null_check` is true
+    /// for `x is null` and false for `x is not null`.
+    fn extract_null_check(expr: &Expr) -> Option<(String, bool)> {
+        match expr {
+            Expr::Binary(left, BinOp::Eq, right, _) => {
+                if let (Expr::Identifier(name, _), Expr::NullLit(_)) = (left.as_ref(), right.as_ref()) {
+                    return Some((name.clone(), true));
+                }
+                if let (Expr::NullLit(_), Expr::Identifier(name, _)) = (left.as_ref(), right.as_ref()) {
+                    return Some((name.clone(), true));
+                }
+                None
+            }
+            Expr::Binary(left, BinOp::NotEq, right, _) => {
+                if let (Expr::Identifier(name, _), Expr::NullLit(_)) = (left.as_ref(), right.as_ref()) {
+                    return Some((name.clone(), false));
+                }
+                if let (Expr::NullLit(_), Expr::Identifier(name, _)) = (left.as_ref(), right.as_ref()) {
+                    return Some((name.clone(), false));
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Check if a block always exits (ends with stop, restart, or out).
+    fn body_always_exits(body: &[Statement]) -> bool {
+        if let Some(last) = body.last() {
+            matches!(last,
+                Statement::Stop(_)
+                | Statement::Restart(_)
+                | Statement::Out(_)
+            )
+        } else {
+            false
+        }
+    }
+
+    /// If the variable has a Nullable type, return the inner type.
+    fn unwrap_nullable(&self, name: &str) -> Option<OboType> {
+        let sym = self.symbols.lookup(name)?;
+        match &sym.ty {
+            OboType::Nullable(inner) => Some(*inner.clone()),
+            _ => None,
         }
     }
 }

@@ -1,0 +1,26 @@
+value float3 {
+    x as f32;
+    y as f32;
+    z as f32;
+}
+
+function main() {
+    a = float3 { x = 1.0; y = 2.0; z = 3.0; };
+    b = float3 { x = 4.0; y = 5.0; z = 6.0; };
+
+    c = a + b;
+    show c.x;
+    show c.y;
+    show c.z;
+
+    d = a * b;
+    show d.x;
+    show d.y;
+    show d.z;
+
+    dot = a.dot(b);
+    show dot;
+
+    len = a.length();
+    show len;
+}

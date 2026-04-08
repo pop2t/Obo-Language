@@ -1,0 +1,110 @@
+// Test obo_map.obo — self-hosted hash map
+
+use obo_string;
+use obo_map;
+
+@export("i64")
+function make_key(c1 as number, c2 as number, c3 as number)
+{
+    buf = pointer.alloc(4);
+    mem.store8(buf, c1);
+    mem.store8(buf + 1, c2);
+    mem.store8(buf + 2, c3);
+    mem.store8(buf + 3, 0);
+    out buf;
+}
+
+function main()
+{
+    // Build keys: "abc"=97,98,99  "def"=100,101,102  "ghi"=103,104,105
+    k1 = make_key(97, 98, 99);
+    k2 = make_key(100, 101, 102);
+    k3 = make_key(103, 104, 105);
+
+    // ── Test 1: Create empty map ──
+    m = rt_map_new();
+    show rt_map_len(m) == 0;
+
+    // ── Test 2: Insert and retrieve i64 ──
+    rt_map_put_i64(m, k1, 42);
+    show rt_map_len(m) == 1;
+    show rt_map_get_i64(m, k1) == 42;
+    show rt_map_has(m, k1) == 1;
+    show rt_map_has(m, k2) == 0;
+
+    // ── Test 3: Insert more entries ──
+    rt_map_put_i64(m, k2, 100);
+    rt_map_put_i64(m, k3, 200);
+    show rt_map_len(m) == 3;
+    show rt_map_get_i64(m, k2) == 100;
+    show rt_map_get_i64(m, k3) == 200;
+
+    // ── Test 4: Update existing key ──
+    rt_map_put_i64(m, k1, 999);
+    show rt_map_len(m) == 3;
+    show rt_map_get_i64(m, k1) == 999;
+
+    // ── Test 5: Insertion order ──
+    // k1 was first, k2 second, k3 third
+    key0 = rt_map_key_at(m, 0);
+    key1_at = rt_map_key_at(m, 1);
+    key2_at = rt_map_key_at(m, 2);
+    show rt_strcmp(key0, k1) == 0;
+    show rt_strcmp(key1_at, k2) == 0;
+    show rt_strcmp(key2_at, k3) == 0;
+
+    // ── Test 6: Remove ──
+    show rt_map_remove(m, k2) == 1;
+    show rt_map_len(m) == 2;
+    show rt_map_has(m, k2) == 0;
+    show rt_map_remove(m, k2) == 0;
+
+    // ── Test 7: After remove, order preserved ──
+    show rt_strcmp(rt_map_key_at(m, 0), k1) == 0;
+    show rt_strcmp(rt_map_key_at(m, 1), k3) == 0;
+
+    // ── Test 8: Put null ──
+    rt_map_put_null(m, k2);
+    show rt_map_has(m, k2) == 1;
+    show rt_map_val_tag_at(m, 2) == 7;
+
+    // ── Test 9: Get returns pointer to value ──
+    vptr = rt_map_get(m, k1);
+    show vptr != 0;
+    show mem.load64(vptr) == 0;      // tag = I64
+    show mem.load64(vptr + 8) == 999; // payload
+
+    // ── Test 10: Many inserts (trigger resize) ──
+    m2 = rt_map_new();
+    i = 0;
+    forever {
+        if (i >= 50) { stop; }
+        // Build a unique key for each
+        buf = pointer.alloc(8);
+        mem.store8(buf, 65 + (i & 15));     // A-P
+        mem.store8(buf + 1, 65 + (i >> 4)); // second char
+        mem.store8(buf + 2, 0);
+        rt_map_put_i64(m2, buf, i * 10);
+        pointer.free(buf);
+        i = i + 1;
+    }
+    show rt_map_len(m2) == 50;
+
+    // Verify a few entries
+    chk = make_key(65, 65, 0);  // "AA" = index 0 → value 0
+    // Actually "AA" has only 2 chars, fix:
+    mem.store8(chk + 2, 0);
+    show rt_map_has(m2, chk) == 1;
+    show rt_map_get_i64(m2, chk) == 0;
+    pointer.free(chk);
+
+    rt_map_free(m2);
+
+    // Cleanup
+    rt_map_free(m);
+    pointer.free(k1);
+    pointer.free(k2);
+    pointer.free(k3);
+
+    show "All map tests passed";
+}

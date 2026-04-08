@@ -7,6 +7,7 @@
 //!   - textDocument/hover                           (type info on identifiers)
 //!   - textDocument/definition                      (go-to-definition)
 //!   - textDocument/completion                      (keyword + symbol completion)
+//!   - textDocument/signatureHelp                    (function parameter hints)
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -387,6 +388,7 @@ impl LspState {
             None => return Json::Arr(vec![]),
         };
 
+        let src = self.documents.get(uri);
         let items: Vec<Json> = diags
             .iter()
             .map(|e| {
@@ -397,7 +399,14 @@ impl LspState {
                 };
                 let line = if e.span.line > 0 { e.span.line - 1 } else { 0 };
                 let col = if e.span.column > 0 { e.span.column - 1 } else { 0 };
-                let end_col = col + e.span.length.max(1);
+                // Clamp end_col to the actual line length so the underline
+                // never extends beyond the visible text.
+                let raw_end = col + e.span.length.max(1);
+                let line_len = src
+                    .and_then(|s| s.lines().nth(line))
+                    .map(|l| l.len())
+                    .unwrap_or(raw_end);
+                let end_col = raw_end.min(line_len);
 
                 let mut msg = e.message.clone();
                 if let Some(ref hint) = e.hint {
@@ -531,22 +540,24 @@ impl LspState {
 
         // Check functions
         if let Some(sig) = analysis.symbols.lookup_function(&word) {
-            let params: Vec<String> = sig
+            let ret_str = format!("{}", sig.return_type);
+            let params_str: Vec<String> = sig
                 .params
                 .iter()
                 .map(|p| {
+                    let ty = format!("{}", p.ty);
                     if p.has_default {
-                        format!("{}?", p.name)
+                        format!("{}: {}?", p.name, ty)
                     } else {
-                        p.name.clone()
+                        format!("{}: {}", p.name, ty)
                     }
                 })
                 .collect();
             return Some(format!(
-                "**function** `{}({})`\n\nReturns: `{:?}`",
+                "**function** `{}({})`\n\nReturns: `{}`",
                 word,
-                params.join(", "),
-                sig.return_type
+                params_str.join(", "),
+                ret_str
             ));
         }
 
@@ -558,59 +569,242 @@ impl LspState {
         None
     }
 
-    fn handle_definition(&self, uri: &str, line: usize, col: usize) -> Option<(String, Span)> {
+    fn handle_definition(&self, uri: &str, line: usize, col: usize) -> Option<(String, Span, usize)> {
         let word = self.word_at(uri, line, col)?;
+        let word_len = word.len();
         let analysis = self.analyses.get(uri)?;
 
         // Type definitions
         if let Some(info) = analysis.symbols.lookup_type(&word) {
-            return Some((uri.to_string(), info.defined_at));
+            return Some((uri.to_string(), info.defined_at, word_len));
         }
 
         // Function definitions
         if let Some(sig) = analysis.symbols.lookup_function(&word) {
-            return Some((uri.to_string(), sig.defined_at));
+            return Some((uri.to_string(), sig.defined_at, word_len));
         }
 
         None
     }
 
-    fn handle_completion(&self, uri: &str, _line: usize, _col: usize) -> Vec<Json> {
+    fn handle_completion(&self, uri: &str, line: usize, col: usize) -> Vec<Json> {
         let mut items: Vec<Json> = Vec::new();
 
-        // Add keywords
-        for kw in OBO_KEYWORDS {
-            items.push(Json::Obj(vec![
-                ("label".into(), Json::Str(kw.to_string())),
-                ("kind".into(), Json::Num(14.0)), // Keyword
-            ]));
+        // Detect if this is a member-access completion (after `.`)
+        let after_dot = self.documents.get(uri).and_then(|src| {
+            let target_line = src.lines().nth(line)?;
+            let chars: Vec<char> = target_line.chars().collect();
+            // Walk backwards from cursor, skip whitespace, check for dot
+            let mut i = if col > 0 { col - 1 } else { return None };
+            while i > 0 && chars.get(i).map_or(false, |c| c.is_whitespace()) {
+                i -= 1;
+            }
+            if chars.get(i) == Some(&'.') {
+                // Find the word before the dot
+                if i == 0 { return None; }
+                let end = i;
+                i -= 1;
+                while i > 0 && chars.get(i).map_or(false, |c| c.is_alphanumeric() || *c == '_') {
+                    i -= 1;
+                }
+                if !chars.get(i).map_or(false, |c| c.is_alphanumeric() || *c == '_') {
+                    i += 1;
+                }
+                let word: String = chars[i..end].iter().collect();
+                Some(word)
+            } else {
+                None
+            }
+        });
+
+        if let Some(ref receiver) = after_dot {
+            // Member-access: show fields/methods for the receiver type
+            if let Some(analysis) = self.analyses.get(uri) {
+                if let Some(info) = analysis.symbols.lookup_type(receiver) {
+                    match &info.kind {
+                        TypeInfoKind::Entity { fields, .. } => {
+                            for (name, fi) in fields {
+                                items.push(Json::Obj(vec![
+                                    ("label".into(), Json::Str(name.clone())),
+                                    ("kind".into(), Json::Num(5.0)), // Field
+                                    ("detail".into(), Json::Str(format!("{}", fi.ty))),
+                                ]));
+                            }
+                        }
+                        TypeInfoKind::Actor { fields, methods, .. } => {
+                            for (name, fi) in fields {
+                                items.push(Json::Obj(vec![
+                                    ("label".into(), Json::Str(name.clone())),
+                                    ("kind".into(), Json::Num(5.0)),
+                                    ("detail".into(), Json::Str(format!("{}", fi.ty))),
+                                ]));
+                            }
+                            for (name, sig) in methods {
+                                let p: Vec<String> = sig.params.iter().map(|p| format!("{}: {}", p.name, p.ty)).collect();
+                                items.push(Json::Obj(vec![
+                                    ("label".into(), Json::Str(name.clone())),
+                                    ("kind".into(), Json::Num(2.0)), // Method
+                                    ("detail".into(), Json::Str(format!("({}) -> {}", p.join(", "), sig.return_type))),
+                                ]));
+                            }
+                        }
+                        TypeInfoKind::Choice { variants } => {
+                            for v in variants {
+                                items.push(Json::Obj(vec![
+                                    ("label".into(), Json::Str(v.name.clone())),
+                                    ("kind".into(), Json::Num(20.0)), // EnumMember
+                                ]));
+                            }
+                        }
+                        TypeInfoKind::Trait { methods, fields } => {
+                            for f in fields {
+                                items.push(Json::Obj(vec![
+                                    ("label".into(), Json::Str(f.clone())),
+                                    ("kind".into(), Json::Num(5.0)),
+                                ]));
+                            }
+                            for (name, sig) in methods {
+                                let p: Vec<String> = sig.params.iter().map(|p| format!("{}: {}", p.name, p.ty)).collect();
+                                items.push(Json::Obj(vec![
+                                    ("label".into(), Json::Str(name.clone())),
+                                    ("kind".into(), Json::Num(2.0)),
+                                    ("detail".into(), Json::Str(format!("({}) -> {}", p.join(", "), sig.return_type))),
+                                ]));
+                            }
+                        }
+                    }
+                }
+            }
+            return items;
         }
 
-        // Add symbols from analysis
-        if let Some(analysis) = self.analyses.get(uri) {
-            // Add functions
-            for (name, _sig) in analysis.symbols.all_functions() {
+        // Normal completion: keywords + all symbols
+        // Get the partial word being typed for filtering
+        let prefix = self.documents.get(uri).and_then(|src| {
+            let target_line = src.lines().nth(line)?;
+            let chars: Vec<char> = target_line.chars().collect();
+            if col == 0 { return Some(String::new()); }
+            let mut start = col;
+            while start > 0 && chars.get(start - 1).map_or(false, |c| c.is_alphanumeric() || *c == '_') {
+                start -= 1;
+            }
+            Some(chars[start..col.min(chars.len())].iter().collect())
+        }).unwrap_or_default();
+
+        let prefix_lower = prefix.to_lowercase();
+
+        for kw in OBO_KEYWORDS {
+            if prefix_lower.is_empty() || kw.starts_with(&prefix_lower) {
                 items.push(Json::Obj(vec![
-                    ("label".into(), Json::Str(name.clone())),
-                    ("kind".into(), Json::Num(3.0)), // Function
+                    ("label".into(), Json::Str(kw.to_string())),
+                    ("kind".into(), Json::Num(14.0)), // Keyword
                 ]));
             }
-            // Add types
+        }
+
+        if let Some(analysis) = self.analyses.get(uri) {
+            for (name, sig) in analysis.symbols.all_functions() {
+                if prefix_lower.is_empty() || name.to_lowercase().starts_with(&prefix_lower) {
+                    let p: Vec<String> = sig.params.iter().map(|p| format!("{}: {}", p.name, p.ty)).collect();
+                    items.push(Json::Obj(vec![
+                        ("label".into(), Json::Str(name.clone())),
+                        ("kind".into(), Json::Num(3.0)), // Function
+                        ("detail".into(), Json::Str(format!("({}) -> {}", p.join(", "), sig.return_type))),
+                    ]));
+                }
+            }
             for (name, info) in analysis.symbols.all_types() {
-                let kind = match &info.kind {
-                    TypeInfoKind::Entity { .. } => 22.0, // Struct
-                    TypeInfoKind::Actor { .. } => 7.0,   // Class
-                    TypeInfoKind::Choice { .. } => 13.0,  // Enum
-                    TypeInfoKind::Trait { .. } => 8.0,    // Interface
-                };
-                items.push(Json::Obj(vec![
-                    ("label".into(), Json::Str(name.clone())),
-                    ("kind".into(), Json::Num(kind)),
-                ]));
+                if prefix_lower.is_empty() || name.to_lowercase().starts_with(&prefix_lower) {
+                    let kind = match &info.kind {
+                        TypeInfoKind::Entity { .. } => 22.0, // Struct
+                        TypeInfoKind::Actor { .. } => 7.0,   // Class
+                        TypeInfoKind::Choice { .. } => 13.0,  // Enum
+                        TypeInfoKind::Trait { .. } => 8.0,    // Interface
+                    };
+                    items.push(Json::Obj(vec![
+                        ("label".into(), Json::Str(name.clone())),
+                        ("kind".into(), Json::Num(kind)),
+                    ]));
+                }
             }
         }
 
         items
+    }
+
+    fn handle_signature_help(&self, uri: &str, line: usize, col: usize) -> Option<Json> {
+        let src = self.documents.get(uri)?;
+        let target_line = src.lines().nth(line)?;
+        let chars: Vec<char> = target_line.chars().collect();
+
+        // Walk backwards from cursor to find the function name and active parameter
+        let mut depth = 0i32;
+        let mut comma_count = 0usize;
+        let mut paren_pos = None;
+        let end = col.min(chars.len());
+        for i in (0..end).rev() {
+            match chars[i] {
+                ')' => depth += 1,
+                '(' => {
+                    if depth == 0 {
+                        paren_pos = Some(i);
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ',' if depth == 0 => comma_count += 1,
+                _ => {}
+            }
+        }
+
+        let paren = paren_pos?;
+        // Extract the function name before the '('
+        let mut name_end = paren;
+        while name_end > 0 && chars[name_end - 1].is_whitespace() {
+            name_end -= 1;
+        }
+        let mut name_start = name_end;
+        while name_start > 0 && (chars[name_start - 1].is_alphanumeric() || chars[name_start - 1] == '_') {
+            name_start -= 1;
+        }
+        if name_start == name_end {
+            return None;
+        }
+        let func_name: String = chars[name_start..name_end].iter().collect();
+
+        let analysis = self.analyses.get(uri)?;
+        let sig = analysis.symbols.lookup_function(&func_name)?;
+
+        let params: Vec<Json> = sig.params.iter().map(|p| {
+            let label = if p.has_default {
+                format!("{}: {}?", p.name, p.ty)
+            } else {
+                format!("{}: {}", p.name, p.ty)
+            };
+            Json::Obj(vec![
+                ("label".into(), Json::Str(label)),
+            ])
+        }).collect();
+
+        let param_strs: Vec<String> = sig.params.iter().map(|p| {
+            if p.has_default {
+                format!("{}: {}?", p.name, p.ty)
+            } else {
+                format!("{}: {}", p.name, p.ty)
+            }
+        }).collect();
+        let label = format!("{}({})", func_name, param_strs.join(", "));
+
+        let sig_info = Json::Obj(vec![
+            ("label".into(), Json::Str(label)),
+            ("parameters".into(), Json::Arr(params)),
+        ]);
+
+        Some(Json::Obj(vec![
+            ("signatures".into(), Json::Arr(vec![sig_info])),
+            ("activeSignature".into(), Json::Num(0.0)),
+            ("activeParameter".into(), Json::Num(comma_count as f64)),
+        ]))
     }
 }
 
@@ -701,13 +895,22 @@ pub fn run_lsp() {
                                     ),
                                 ]),
                             ),
+                            (
+                                "signatureHelpProvider".into(),
+                                Json::Obj(vec![
+                                    (
+                                        "triggerCharacters".into(),
+                                        Json::Arr(vec![Json::Str("(".into()), Json::Str(",".into())]),
+                                    ),
+                                ]),
+                            ),
                         ]),
                     ),
                     (
                         "serverInfo".into(),
                         Json::Obj(vec![
                             ("name".into(), Json::Str("obo-lsp".into())),
-                            ("version".into(), Json::Str("0.5.0".into())),
+                            ("version".into(), Json::Str("0.6.0".into())),
                         ]),
                     ),
                 ]);
@@ -849,9 +1052,10 @@ pub fn run_lsp() {
                             let col = p
                                 .get_path(&["position", "character"])
                                 .and_then(|v| v.as_i64())? as usize;
-                            let (def_uri, span) = state.handle_definition(uri, line, col)?;
+                            let (def_uri, span, word_len) = state.handle_definition(uri, line, col)?;
                             let def_line = if span.line > 0 { span.line - 1 } else { 0 };
                             let def_col = if span.column > 0 { span.column - 1 } else { 0 };
+                            let def_end_col = def_col + word_len;
                             Some(Json::Obj(vec![
                                 ("uri".into(), Json::Str(def_uri)),
                                 (
@@ -868,7 +1072,7 @@ pub fn run_lsp() {
                                             "end".into(),
                                             Json::Obj(vec![
                                                 ("line".into(), Json::Num(def_line as f64)),
-                                                ("character".into(), Json::Num(def_col as f64)),
+                                                ("character".into(), Json::Num(def_end_col as f64)),
                                             ]),
                                         ),
                                     ]),
@@ -898,6 +1102,27 @@ pub fn run_lsp() {
                         })
                         .unwrap_or_default();
                     let result = Json::Arr(items);
+                    let resp = make_response(id, result);
+                    let _ = send_message(&mut writer, &resp);
+                }
+            }
+
+            "textDocument/signatureHelp" => {
+                if let Some(id) = id {
+                    let result = params
+                        .and_then(|p| {
+                            let uri = p
+                                .get_path(&["textDocument", "uri"])
+                                .and_then(|v| v.as_str())?;
+                            let line = p
+                                .get_path(&["position", "line"])
+                                .and_then(|v| v.as_i64())? as usize;
+                            let col = p
+                                .get_path(&["position", "character"])
+                                .and_then(|v| v.as_i64())? as usize;
+                            state.handle_signature_help(uri, line, col)
+                        })
+                        .unwrap_or(Json::Null);
                     let resp = make_response(id, result);
                     let _ = send_message(&mut writer, &resp);
                 }

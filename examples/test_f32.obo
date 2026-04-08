@@ -1,0 +1,49 @@
+function main() {
+    // Basic f32 declaration
+    f32 x = 3.14;
+    show "f32 x = " + x;
+
+    // f32 arithmetic
+    f32 y = 2.0;
+    f32 sum = x + y;
+    show "x + y = " + sum;
+
+    f32 diff = x - y;
+    show "x - y = " + diff;
+
+    f32 prod = x * y;
+    show "x * y = " + prod;
+
+    f32 quot = x / y;
+    show "x / y = " + quot;
+
+    // f32 negation
+    f32 neg = -x;
+    show "-x = " + neg;
+
+    // f32 comparison
+    show "x > y: " + (x > y);
+    show "x < y: " + (x < y);
+    show "x == x: " + (x == x);
+
+    // f32 with number
+    f32 z = x + 10;
+    show "x + 10 = " + z;
+
+    // f32 with decimal
+    decimal d = x + 1.5;
+    show "f32 + decimal = " + d;
+
+    // f64 alias for decimal
+    f64 big = 123.456;
+    show "f64 big = " + big;
+
+    // f32 precision test (f32 has ~7 digits)
+    f32 precise = 1.23456789;
+    show "f32 precision: " + precise;
+
+    decimal precise64 = 1.23456789;
+    show "f64 precision: " + precise64;
+
+    show "done";
+}

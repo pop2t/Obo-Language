@@ -58,6 +58,8 @@ pub struct TypeInfo {
     pub is_deprecated: bool,
     pub is_reflectable: bool,
     pub is_serializable: bool,
+    pub is_packed: bool,
+    pub is_value: bool,
     pub defined_at: Span,
 }
 

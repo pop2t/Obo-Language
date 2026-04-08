@@ -49,6 +49,24 @@ impl Checker {
                     return OboType::Unknown;
                 }
 
+                // Allow component-wise arithmetic on matching value types
+                if lt == rt {
+                    let name = match &lt {
+                        OboType::Entity(n) | OboType::Named(n) => Some(n.as_str()),
+                        _ => None,
+                    };
+                    if let Some(n) = name {
+                        if self.symbols.lookup_type(n).map_or(false, |t| t.is_value) {
+                            match op {
+                                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                                    return lt;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
                 match op {
                     BinOp::Add => {
                         if lt == OboType::Text || rt == OboType::Text {
@@ -129,6 +147,25 @@ impl Checker {
                     | BinOp::Greater
                     | BinOp::LessEq
                     | BinOp::GreaterEq => OboType::Flag,
+                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
+                    | BinOp::Shl | BinOp::Shr => {
+                        if !lt.is_unknown() && !rt.is_unknown()
+                            && (!lt.is_numeric() || !rt.is_numeric())
+                        {
+                            self.errors.push(OboError::new(
+                                ErrorKind::InvalidOperation,
+                                format!(
+                                    "Bitwise ops need integers, got {} and {}",
+                                    lt.display_name(),
+                                    rt.display_name()
+                                ),
+                                *span,
+                            ));
+                            OboType::Error
+                        } else {
+                            OboType::Number
+                        }
+                    }
                 }
             }
 
@@ -163,6 +200,21 @@ impl Checker {
                         }
                         OboType::Flag
                     }
+                    UnaryOp::BitNot => {
+                        if !t.is_unknown() && !t.is_error() && !t.is_numeric() {
+                            self.errors.push(OboError::new(
+                                ErrorKind::InvalidOperation,
+                                format!(
+                                    "'~' only works with integers, got {}",
+                                    t.display_name()
+                                ),
+                                *span,
+                            ));
+                            OboType::Error
+                        } else {
+                            OboType::Number
+                        }
+                    }
                 }
             }
 
@@ -175,6 +227,16 @@ impl Checker {
             Expr::Call(callee, args, span) => {
                 if let Expr::Identifier(name, _) = callee.as_ref() {
                     self.symbols.mark_used(name);
+                    if name == "Arena" && !self.in_metal {
+                        self.errors.push(
+                            OboError::new(
+                                ErrorKind::InvalidOperation,
+                                "Arena is only available inside metal blocks",
+                                *span,
+                            )
+                            .with_hint("Wrap this code in a metal { } block to use Arena."),
+                        );
+                    }
                 }
                 if let Expr::MemberAccess(obj, _, _) = callee.as_ref() {
                     if let Expr::Identifier(name, _) = obj.as_ref() {
@@ -306,6 +368,17 @@ impl Checker {
                             ),
                         );
                     }
+                    // Metal boundary: only packed entities allowed in metal blocks
+                    if self.in_metal && !info.is_packed {
+                        self.errors.push(
+                            OboError::new(
+                                ErrorKind::InvalidOperation,
+                                format!("Can't create '{}' inside a metal block — only packed entities allowed here", name),
+                                *span,
+                            )
+                            .with_hint("Use 'packed entity' for types that need to live in metal blocks".to_string()),
+                        );
+                    }
                     let is_actor = matches!(info.kind, TypeInfoKind::Actor { .. });
                     match &info.kind {
                         TypeInfoKind::Entity {
@@ -401,10 +474,24 @@ impl Checker {
             Expr::IfPossibleElse(value, fallback, _) => {
                 let val_type = self.infer_expr_type(value);
                 let fb_type = self.infer_expr_type(fallback);
-                if val_type.is_unknown() {
-                    fb_type
+
+                // If the value is a cast, resolve the target type
+                let effective_val_type = if val_type.is_unknown() {
+                    if let Expr::Cast(type_expr, _, _) = value.as_ref() {
+                        self.resolve_type_expr(type_expr)
+                    } else {
+                        val_type
+                    }
                 } else {
                     val_type
+                };
+
+                if fb_type == OboType::Null || fb_type.is_nullable() {
+                    OboType::Nullable(Box::new(effective_val_type))
+                } else if effective_val_type.is_unknown() {
+                    fb_type
+                } else {
+                    effective_val_type
                 }
             }
 
@@ -441,7 +528,15 @@ impl Checker {
             }
 
             Expr::Cast(_, _, _) => OboType::Unknown,
-            Expr::SafeCast(_, _, fallback, _) => self.infer_expr_type(fallback),
+            Expr::SafeCast(type_expr, _value, fallback, _) => {
+                let target = self.resolve_type_expr(type_expr);
+                let fb_type = self.infer_expr_type(fallback);
+                if fb_type == OboType::Null || fb_type.is_nullable() {
+                    OboType::Nullable(Box::new(target))
+                } else {
+                    target
+                }
+            }
             Expr::Range(start, end, step, _) => {
                 self.infer_expr_type(start);
                 self.infer_expr_type(end);
@@ -469,18 +564,55 @@ impl Checker {
                 }
                 OboType::Text
             }
+            Expr::Own(expr, span) => {
+                if !self.in_metal {
+                    self.errors.push(
+                        OboError::new(
+                            ErrorKind::InvalidOperation,
+                            "own is only allowed inside metal blocks",
+                            *span,
+                        )
+                        .with_hint("Wrap this code in a metal { } block to use own."),
+                    );
+                }
+                self.infer_expr_type(expr)
+            }
+            Expr::InlineAsm(_template, _constraints, inputs, span) => {
+                if !self.in_metal {
+                    self.errors.push(
+                        OboError::new(
+                            ErrorKind::InvalidOperation,
+                            "asm is only allowed inside metal blocks",
+                            *span,
+                        )
+                        .with_hint("Wrap this code in a metal { } block to use asm."),
+                    );
+                }
+                for input in inputs {
+                    self.infer_expr_type(input);
+                }
+                OboType::Number // asm returns i64
+            }
         }
     }
 
     pub(super) fn resolve_type_expr(&self, type_expr: &TypeExpr) -> OboType {
         match type_expr {
             TypeExpr::Named(name, _) => match name.as_str() {
-                "number" => OboType::Number,
+                "number" | "i64" => OboType::Number,
                 "decimal" => OboType::Decimal,
                 "text" => OboType::Text,
                 "char" => OboType::Char,
                 "flag" => OboType::Flag,
-                "byte" => OboType::Byte,
+                "byte" | "u8" => OboType::Byte,
+                "i8" => OboType::I8,
+                "i16" => OboType::I16,
+                "i32" => OboType::I32,
+                "u16" => OboType::U16,
+                "u32" => OboType::U32,
+                "u64" => OboType::U64,
+                "f32" => OboType::F32,
+                "f64" => OboType::Decimal,
                 "null" => OboType::Null,
                 other => OboType::Named(other.to_string()),
             },

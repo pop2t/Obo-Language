@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 
 /// A unique ID for a temporary value: %0, %1, %2, ...
@@ -80,6 +81,11 @@ pub enum BinOp {
     And,
     Or,
     Concat,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl fmt::Display for BinOp {
@@ -99,6 +105,11 @@ impl fmt::Display for BinOp {
             BinOp::And => write!(f, "and"),
             BinOp::Or => write!(f, "or"),
             BinOp::Concat => write!(f, "concat"),
+            BinOp::BitAnd => write!(f, "bitand"),
+            BinOp::BitOr => write!(f, "bitor"),
+            BinOp::BitXor => write!(f, "bitxor"),
+            BinOp::Shl => write!(f, "shl"),
+            BinOp::Shr => write!(f, "shr"),
         }
     }
 }
@@ -108,6 +119,7 @@ impl fmt::Display for BinOp {
 pub enum UnaryOp {
     Neg,
     Not,
+    BitNot,
 }
 
 impl fmt::Display for UnaryOp {
@@ -115,6 +127,7 @@ impl fmt::Display for UnaryOp {
         match self {
             UnaryOp::Neg => write!(f, "neg"),
             UnaryOp::Not => write!(f, "not"),
+            UnaryOp::BitNot => write!(f, "bitnot"),
         }
     }
 }
@@ -173,6 +186,9 @@ pub enum Inst {
     /// dst = make_entity "TypeName", [(field_name, value)...]
     MakeEntity(Reg, String, Vec<(String, Operand)>),
 
+    /// dst = make_packed_entity "TypeName", [(field_name, value)...]
+    MakePackedEntity(Reg, String, Vec<(String, Operand)>),
+
     /// Unconditional jump
     Jump(BlockId),
 
@@ -202,6 +218,9 @@ pub enum Inst {
 
     /// No-op (placeholder)
     Nop,
+
+    /// Inline assembly: dst = asm("template", "constraints", inputs...)
+    InlineAsm(Reg, String, String, Vec<Operand>),
 }
 
 /// A basic block: a label + a sequence of instructions ending with a terminator.
@@ -209,15 +228,23 @@ pub enum Inst {
 pub struct BasicBlock {
     pub id: BlockId,
     pub insts: Vec<Inst>,
+    /// Source line numbers (1-based) parallel to `insts`. 0 = no debug location.
+    pub lines: Vec<u32>,
 }
 
 impl BasicBlock {
     pub fn new(id: BlockId) -> Self {
-        Self { id, insts: Vec::new() }
+        Self { id, insts: Vec::new(), lines: Vec::new() }
     }
 
     pub fn push(&mut self, inst: Inst) {
         self.insts.push(inst);
+        self.lines.push(0);
+    }
+
+    pub fn push_with_line(&mut self, inst: Inst, line: u32) {
+        self.insts.push(inst);
+        self.lines.push(line);
     }
 
     pub fn is_terminated(&self) -> bool {
@@ -278,6 +305,16 @@ pub struct IrFunction {
     /// Parallel to `params`; defaults to `I64` when missing (see lowering).
     pub param_types: Vec<IrParamType>,
     pub blocks: Vec<BasicBlock>,
+    /// Source line where the function was defined (1-based, 0 = unknown).
+    pub start_line: u32,
+    /// True when the function has `@export` — emitted with external linkage and C ABI.
+    pub is_export: bool,
+    /// For `@export` functions: LLVM type strings for params (e.g. "i32", "i8*", "double").
+    pub export_param_types: Vec<String>,
+    /// For `@export` functions: LLVM return type string (e.g. "void", "i32", "i8*").
+    pub export_ret_type: Option<String>,
+    /// True when the function has `@interrupt` — emitted with naked CC for bare-metal ISR.
+    pub is_interrupt: bool,
 }
 
 /// A bridge (FFI) function declaration carried through to native emit.
@@ -298,6 +335,16 @@ pub struct IrProgram {
     pub bridge_fns: Vec<IrBridgeFn>,
     /// Entity type → ordered list of field names (for struct-layout optimisation).
     pub entity_layouts: HashMap<String, Vec<String>>,
+    /// Packed entity type → ordered list of (field_name, field_type_name).
+    pub packed_layouts: HashMap<String, Vec<(String, String)>>,
+    /// Value type names (stack-allocated, metal-only, component-wise ops).
+    pub value_types: HashSet<String>,
+    /// Source file name for debug info.
+    pub source_file: String,
+    /// Source directory for debug info.
+    pub source_dir: String,
+    /// Names of @export functions (for function pointer references).
+    pub export_fns: HashSet<String>,
 }
 
 impl IrProgram {
@@ -307,6 +354,11 @@ impl IrProgram {
             constants: Vec::new(),
             bridge_fns: Vec::new(),
             entity_layouts: HashMap::new(),
+            packed_layouts: HashMap::new(),
+            value_types: HashSet::new(),
+            source_file: String::new(),
+            source_dir: String::new(),
+            export_fns: HashSet::new(),
         }
     }
 }

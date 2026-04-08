@@ -1,0 +1,39 @@
+// Bitwise operators test
+
+function main()
+{
+    // AND
+    a = 255 & 15;
+    show a;  // 15
+
+    // XOR
+    b = 170 ^ 85;
+    show b;  // 255
+
+    // Shift left
+    c = 1 << 8;
+    show c;  // 256
+
+    // Shift right
+    d = 256 >> 4;
+    show d;  // 16
+
+    // Bitwise NOT
+    e = ~0;
+    show e;  // -1
+
+    // Combined: (a & b) ^ (c >> 2)
+    f = (15 & 255) ^ (256 >> 2);
+    show f;  // 15 ^ 64 = 79
+
+    // Precedence: shifts bind tighter than &
+    // 1 << 4 & 0xFF  should be  (1 << 4) & 0xFF = 16 & 255 = 16
+    g = 1 << 4 & 255;
+    show g;  // 16
+
+    // NOT combined with AND
+    h = ~255 & 65535;
+    show h;  // -256 & 65535 = 65280
+
+    show "All bitwise tests passed!";
+}

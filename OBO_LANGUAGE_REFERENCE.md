@@ -16,23 +16,27 @@
 7. [Functions](#7-functions)
 8. [Closures & Actions](#8-closures--actions)
 9. [Entities (Structs)](#9-entities-structs)
-10. [Actors (Classes)](#10-actors-classes)
-11. [Choices (Enums/ADTs)](#11-choices-enumsadts)
-12. [Traits](#12-traits)
-13. [Properties](#13-properties)
-14. [Operator Overloading](#14-operator-overloading)
-15. [Type Extensions](#15-type-extensions)
-16. [Modules & Imports](#16-modules--imports)
-17. [Collections](#17-collections)
-18. [Error Handling](#18-error-handling)
-19. [Concurrency](#19-concurrency)
-20. [Events](#20-events)
-21. [Type System](#21-type-system)
-22. [Attributes](#22-attributes)
-23. [Bridge (FFI)](#23-bridge-ffi)
-24. [Standard Library](#24-standard-library)
-25. [Memory Regions](#25-memory-regions)
-26. [Running OBO Programs](#26-running-obo-programs)
+10. [Value Types](#10-value-types)
+11. [Packed Entities](#11-packed-entities)
+12. [Actors (Classes)](#12-actors-classes)
+13. [Choices (Enums/ADTs)](#13-choices-enumsadts)
+14. [Traits](#14-traits)
+15. [Properties](#15-properties)
+16. [Operator Overloading](#16-operator-overloading)
+17. [Type Extensions](#17-type-extensions)
+18. [Modules & Imports](#18-modules--imports)
+19. [Collections](#19-collections)
+20. [Error Handling](#20-error-handling)
+21. [Concurrency](#21-concurrency)
+22. [Events](#22-events)
+23. [Type System](#23-type-system)
+24. [Attributes](#24-attributes)
+25. [Bridge (FFI)](#25-bridge-ffi)
+26. [Standard Library](#26-standard-library)
+27. [Memory Regions](#27-memory-regions)
+28. [Memory Intrinsics](#28-memory-intrinsics)
+29. [Bare-Metal & Freestanding](#29-bare-metal--freestanding)
+30. [Building & Running](#30-building--running)
 
 ---
 
@@ -64,15 +68,21 @@ function main()
 
 ### Keywords (Reserved Words)
 
-**Declarations:** `function`, `entity`, `actor`, `choice`, `trait`, `system`, `template`, `final`, `shared`, `public`, `property`, `extend`, `type`, `const`, `event`, `operator`, `bridge`
+**Declarations:** `function`, `entity`, `packed`, `actor`, `choice`, `trait`, `system`, `template`, `final`, `shared`, `public`, `property`, `extend`, `type`, `const`, `event`, `operator`, `bridge`, `value`
 
 **Control Flow:** `if`, `else`, `while`, `forever`, `count`, `for`, `in`, `check`, `is`, `stop`, `restart`, `out`, `wait`
 
 **Logic:** `and`, `or`, `not`
 
-**Types:** `number`, `decimal`, `text`, `char`, `flag`, `byte`, `bits`, `pointer`, `atomic`, `null`, `list`, `map`, `set`, `bag`, `queue`, `stack`, `grid2d`, `grid3d`, `pair`, `slice`, `buffer`
+**Types:** `number`, `decimal`, `text`, `char`, `flag`, `byte`, `bits`, `pointer`, `handle`, `atomic`, `null`, `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`
 
-**Other:** `action`, `emit`, `listen`, `override`, `use`, `from`, `of`, `as`, `to`, `step`, `safe`, `metal`, `gc`, `run`, `channel`, `possible`, `show`, `prompt`, `into`, `then`, `has`, `assert`, `inspect`
+**Collections:** `list`, `map`, `set`, `bag`, `queue`, `stack`, `grid2d`, `grid3d`, `pair`, `slice`, `buffer`
+
+**Memory:** `safe`, `metal`, `gc`, `defer`, `own`
+
+**Bitwise:** `bitor`
+
+**Other:** `action`, `emit`, `listen`, `override`, `use`, `from`, `of`, `as`, `to`, `step`, `run`, `channel`, `possible`, `show`, `prompt`, `into`, `then`, `has`, `assert`, `inspect`
 
 ---
 
@@ -93,8 +103,8 @@ nothing = null;
 ### Type Annotations (Optional)
 
 ```obo
-x = 42;               // inferred as number
-name as text = "Obo";  // explicitly typed (parameter style)
+x = 42;                // inferred as number
+name as text = "Obo";  // explicitly typed
 ```
 
 ### Constants
@@ -116,26 +126,64 @@ val, err = divide(10, 0);
 
 ## 3. Data Types
 
-| Type      | Description                  | Literal Examples           |
-|-----------|------------------------------|----------------------------|
-| `number`  | 64-bit signed integer        | `42`, `-7`, `0`            |
-| `decimal` | 64-bit floating point        | `3.14`, `-0.5`             |
-| `text`    | UTF-8 string                 | `"hello"`, `"line\n"`      |
-| `char`    | Single character             | `'a'`, `'Z'`              |
-| `flag`    | Boolean                      | `true`, `false`            |
-| `null`    | Null/absent value            | `null`                     |
-| `list`    | Ordered collection           | `[1, 2, 3]`               |
-| `map`     | Key-value dictionary         | `["a": 1, "b": 2]`        |
-| `set`     | Unique elements              | via `Set` constructor      |
-| `pair`    | Two-element tuple            | via `Pair` constructor     |
-| `queue`   | FIFO collection              | via `Queue` constructor    |
-| `stack`   | LIFO collection              | via `Stack` constructor    |
-| `bag`     | Unordered, allows duplicates | via `Bag` constructor      |
-| `grid2d`  | 2D array                     | via `Grid2D` constructor   |
-| `grid3d`  | 3D array                     | via `Grid3D` constructor   |
-| `buffer`  | Byte array                   | via `Buffer` constructor   |
-| `atomic`  | Thread-safe atomic value     | `atomic of number(0)`      |
-| `channel` | Concurrency communication    | `channel`                  |
+### Standard Types
+
+| Type      | Description              | Literal Examples       |
+|-----------|--------------------------|------------------------|
+| `number`  | 64-bit signed integer    | `42`, `-7`, `0`        |
+| `decimal` | 64-bit floating point    | `3.14`, `-0.5`         |
+| `text`    | UTF-8 string             | `"hello"`, `"line\n"`  |
+| `char`    | Single character         | `'a'`, `'Z'`           |
+| `flag`    | Boolean                  | `true`, `false`        |
+| `null`    | Null/absent value        | `null`                 |
+
+### Fixed-Width Integer Types
+
+Used in packed entities, value types, and low-level code:
+
+| Type  | Description               |
+|-------|---------------------------|
+| `i8`  | 8-bit signed integer      |
+| `i16` | 16-bit signed integer     |
+| `i32` | 32-bit signed integer     |
+| `i64` | 64-bit signed integer     |
+| `u8`  | 8-bit unsigned integer    |
+| `u16` | 16-bit unsigned integer   |
+| `u32` | 32-bit unsigned integer   |
+| `u64` | 64-bit unsigned integer   |
+| `f32` | 32-bit floating point     |
+| `f64` | 64-bit floating point     |
+
+```obo
+port as u16 = 8080;
+x as f32 = 1.5;
+big as i64 = 9999999;
+```
+
+### Special Types
+
+| Type      | Description                         |
+|-----------|-------------------------------------|
+| `pointer` | Raw memory address (metal only)     |
+| `handle`  | Opaque FFI resource — no arithmetic |
+| `atomic`  | Thread-safe atomic value            |
+| `channel` | Concurrency communication pipe      |
+
+### Collection Types
+
+| Type     | Description            | Literal                |
+|----------|------------------------|------------------------|
+| `list`   | Ordered collection     | `[1, 2, 3]`           |
+| `map`    | Key-value dictionary   | `["a": 1, "b": 2]`    |
+| `set`    | Unique elements        | via `set()` call       |
+| `pair`   | Two-element tuple      | via `pair()` call      |
+| `queue`  | FIFO collection        | via `queue()` call     |
+| `stack`  | LIFO collection        | via `stack()` call     |
+| `bag`    | Unordered, duplicates  | via `bag()` call       |
+| `grid2d` | 2D array               | via `grid2d()` call    |
+| `grid3d` | 3D array               | via `grid3d()` call    |
+| `buffer` | Byte array             | via `buffer()` call    |
+| `slice`  | View into a list       | via `.slice()` method  |
 
 ---
 
@@ -165,11 +213,31 @@ val, err = divide(10, 0);
 
 ### Logical
 
-| Operator | Description | Example            |
-|----------|-------------|--------------------|
+| Operator | Description | Example             |
+|----------|-------------|---------------------|
 | `and`    | Logical AND | `x > 0 and x < 10` |
 | `or`     | Logical OR  | `x == 0 or x == 1` |
 | `not`    | Logical NOT | `not done`          |
+
+### Bitwise
+
+| Operator | Description         | Example         |
+|----------|---------------------|-----------------|
+| `&`      | Bitwise AND         | `x & 0xFF`      |
+| `bitor`  | Bitwise OR          | `x bitor 1`     |
+| `^`      | Bitwise XOR         | `x ^ mask`      |
+| `~`      | Bitwise NOT (unary) | `~x`            |
+| `<<`     | Left shift          | `1 << 4`        |
+| `>>`     | Right shift         | `x >> 1`        |
+
+> **Note:** OBO uses the keyword `bitor` instead of `|` for bitwise OR because `|` is reserved for the pipe operator `|>`.
+
+```obo
+flags = (1 << 3) bitor (1 << 5);   // set bits 3 and 5
+mask = flags & 0xFF;                 // mask to low byte
+shifted = flags >> 1;                // shift right
+header_val = (size * 2) bitor 1;     // encode size with flag bit
+```
 
 ### Identity
 
@@ -192,6 +260,19 @@ value then transform;   // alternative pipe syntax
 ```obo
 result = (number)input;   // type cast
 ```
+
+### Operator Precedence (high to low)
+
+1. Unary: `-`, `not`, `~`
+2. Multiplicative: `*`, `/`, `%`
+3. Additive: `+`, `-`
+4. Shift: `<<`, `>>`
+5. Bitwise AND: `&`
+6. Bitwise XOR: `^`
+7. Bitwise OR: `bitor`
+8. Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`, `is`
+9. Logical: `and`, `or`
+10. Pipe: `|>`, `then`
 
 ---
 
@@ -531,7 +612,86 @@ show pos;
 
 ---
 
-## 10. Actors (Classes)
+## 10. Value Types
+
+Value types are stack-allocated entities optimized for performance. They use fixed-width fields and support operator overloading. Declared with `value` instead of `entity`.
+
+```obo
+value float3
+{
+    x as f32;
+    y as f32;
+    z as f32;
+}
+```
+
+### Construction & Access
+
+```obo
+a = float3 { x = 1.0; y = 2.0; z = 3.0; };
+b = float3 { x = 4.0; y = 5.0; z = 6.0; };
+
+show a.x;    // 1.0
+show a.y;    // 2.0
+```
+
+### Operator Overloading on Value Types
+
+Value types can define custom operators for use in arithmetic expressions:
+
+```obo
+c = a + b;     // uses operator+ if defined
+d = a * b;     // uses operator* if defined
+```
+
+### When to Use Value Types
+
+- Math vectors, colors, quaternions, fixed-size structs
+- GPU vertex data, physics data
+- Any struct where you want stack allocation and no heap overhead
+- Fields must use fixed-width types (`f32`, `f64`, `i32`, `u8`, etc.)
+
+---
+
+## 11. Packed Entities
+
+Packed entities have dense memory layout with no padding. Fields must be fixed-width types. Used for binary protocols, hardware registers, and serialization.
+
+```obo
+packed entity TCPHeader
+{
+    src_port as u16;
+    dst_port as u16;
+    seq_num as u32;
+    ack_num as u32;
+}
+```
+
+### Construction
+
+```obo
+header = TCPHeader
+{
+    src_port = 8080;
+    dst_port = 443;
+    seq_num = 12345;
+    ack_num = 0;
+};
+show header.src_port;    // 8080
+```
+
+### Packed vs Regular Entities
+
+| Feature       | `entity`             | `packed entity`           |
+|---------------|----------------------|---------------------------|
+| Field types   | Any                  | Fixed-width only          |
+| Layout        | Compiler decides     | Dense, no padding         |
+| Alignment     | Default              | Packed (1-byte aligned)   |
+| Use case      | General data         | Binary protocols, HW regs |
+
+---
+
+## 12. Actors (Classes)
 
 Actors are the primary object-oriented construct in OBO. They have fields, methods, properties, events, and operator overloads.
 
@@ -683,7 +843,7 @@ actor Farmer is Character has Workable
 
 ---
 
-## 11. Choices (Enums / ADTs)
+## 13. Choices (Enums / ADTs)
 
 ### Simple Enum
 
@@ -726,7 +886,7 @@ check (shape)
 
 ---
 
-## 12. Traits
+## 14. Traits
 
 Traits define interface contracts that actors can implement:
 
@@ -752,7 +912,7 @@ actor Robot has Workable
 
 ---
 
-## 13. Properties
+## 15. Properties
 
 Computed properties with getters and optional setters:
 
@@ -783,7 +943,7 @@ c.diameter = 20;       // calls setter
 
 ---
 
-## 14. Operator Overloading
+## 16. Operator Overloading
 
 ```obo
 actor Vec2
@@ -795,14 +955,31 @@ actor Vec2
     {
         out Vec2 { x = x + other.x; y = y + other.y; };
     }
+
+    operator -(other)
+    {
+        out Vec2 { x = x - other.x; y = y - other.y; };
+    }
+
+    operator *(other)
+    {
+        out Vec2 { x = x * other.x; y = y * other.y; };
+    }
+
+    operator ==(other)
+    {
+        out x == other.x and y == other.y;
+    }
 }
 ```
 
+Supported overloadable operators: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`
+
 ---
 
-## 15. Type Extensions
+## 17. Type Extensions
 
-Add methods to existing types:
+Add methods to existing built-in types:
 
 ```obo
 extend number
@@ -824,9 +1001,11 @@ show x.doubled();    // 42
 show x.isEven();     // false
 ```
 
+The first parameter receives the value the method is called on.
+
 ---
 
-## 16. Modules & Imports
+## 18. Modules & Imports
 
 ### Importing a Module
 
@@ -862,7 +1041,7 @@ use Collections;
 Module files are `.obo` files in a `modules/` directory relative to the importing file:
 
 ```
-examples/
+project/
     main.obo
     modules/
         helpers.obo
@@ -871,7 +1050,7 @@ examples/
 
 ---
 
-## 17. Collections
+## 19. Collections
 
 ### Lists
 
@@ -895,6 +1074,7 @@ nums.indexOf(3);       // 2
 nums.join(", ");       // "1, 2, 3, 4, 5"
 nums.reversed;         // [5, 4, 3, 2, 1]
 nums.sorted;           // ascending sort
+nums.sortBy(action(a, b) { out a - b; });  // custom comparator sort
 nums.distinct;         // remove duplicates
 nums.take(3);          // [1, 2, 3]
 nums.skip(2);          // [3, 4, 5]
@@ -913,6 +1093,7 @@ nums.all(n => n > 0);              // true
 
 ```obo
 ages = ["Alice": 30, "Bob": 25];
+empty = map();               // empty map constructor
 
 ages["Alice"];            // 30
 ages.count;              // 2
@@ -995,7 +1176,7 @@ buf.length;
 
 ---
 
-## 18. Error Handling
+## 20. Error Handling
 
 ### Possible Block (Try/Catch)
 
@@ -1026,7 +1207,7 @@ assert(x > 0, "x must be positive");
 
 ---
 
-## 19. Concurrency
+## 21. Concurrency
 
 ### Run (Spawn Task)
 
@@ -1070,7 +1251,7 @@ show val;    // 6
 
 ---
 
-## 20. Events
+## 22. Events
 
 Events provide a publish/subscribe mechanism within actors:
 
@@ -1096,7 +1277,7 @@ btn.press();    // triggers listener
 
 ---
 
-## 21. Type System
+## 23. Type System
 
 ### Type Aliases
 
@@ -1142,9 +1323,13 @@ n = (number)textValue if possible else 0;     // safe cast
 
 ---
 
-## 22. Attributes
+## 24. Attributes
 
-Attributes modify declarations:
+Attributes modify declarations. Placed before the declaration with `@`:
+
+### @test
+
+Marks a function as a test case:
 
 ```obo
 @test
@@ -1154,38 +1339,116 @@ function test_addition()
 }
 ```
 
-### Built-in Attributes
+### @export
 
-- `@test` — marks a function as a test case
-
----
-
-## 23. Bridge (FFI)
-
-Bridge blocks declare external C functions:
+Exports a function for FFI / bare-metal use. Takes the C return type as a string argument:
 
 ```obo
-bridge "libc"
+@export("void")
+function setup()
 {
-    function puts(s as pointer) out number;
-    function printf(fmt as pointer, ...) out number;
+    x = 42;
+}
+
+@export("i32")
+function add(a as number, b as number)
+{
+    out a + b;
+}
+
+@export("i64")
+function compute(x as number)
+{
+    out x * x;
 }
 ```
 
-- `bridge "lib_name"` — specifies the library
-- Parameters require type annotations
-- `...` for variadic functions
-- `out TypeExpr` for return type
+Exported functions:
+- Use the function name as the symbol (no name mangling)
+- Specify the C-compatible return type: `"void"`, `"i32"`, `"i64"`, etc.
+- Parameters with `as number` map to `i64` in the ABI
+
+### @interrupt
+
+Marks a function as an interrupt service routine for bare-metal targets:
+
+```obo
+@interrupt
+function timer_isr()
+{
+    n = 1;
+    out n;
+}
+```
+
+Interrupt handlers:
+- Must take no parameters
+- Used with `--freestanding` builds
+- Generate appropriate calling convention for the target
 
 ---
 
-## 24. Standard Library
+## 25. Bridge (FFI)
+
+Bridge blocks declare external C functions for foreign function interface:
+
+```obo
+bridge "c"
+{
+    function puts(s as text) out number;
+    function printf(fmt as text, ...) out number;
+}
+```
+
+### Syntax
+
+```obo
+bridge "library_name"
+{
+    function name(params) out ReturnType;
+}
+```
+
+- `bridge "lib_name"` — specifies the library (`"c"` for libc, `"gpu"` for GPU libs, etc.)
+- Parameters require type annotations (`as type`)
+- `...` for variadic functions (C varargs)
+- `out TypeExpr` for return type
+- `handle` for opaque FFI resource types
+
+### Bridge with Handle Types
+
+```obo
+bridge "gpu"
+{
+    function create_device() out handle;
+    function destroy_device(dev as handle);
+    function submit_command(dev as handle, cmd as pointer);
+}
+```
+
+### Calling Bridge Functions
+
+```obo
+bridge "c"
+{
+    function puts(s as text) out number;
+}
+
+function main()
+{
+    puts("Hello from C!");
+}
+```
+
+---
+
+## 26. Standard Library
+
+OBO includes built-in system actors accessible without imports.
 
 ### Math
 
 ```obo
-use Math;
-
 Math.pi;                    // 3.14159...
 Math.e;                     // 2.71828...
 Math.infinity;
@@ -1225,8 +1488,6 @@ Convert.toChar(65);          // 'A'
 ### File
 
 ```obo
-use File;
-
 content = File.read("data.txt");
 File.write("output.txt", "hello");
 File.append("log.txt", "entry\n");
@@ -1238,8 +1499,6 @@ lines = File.readLines("data.txt");  // list of lines
 ### Time
 
 ```obo
-use Time;
-
 Time.now;              // epoch ms
 Time.nowSeconds;       // epoch seconds
 Time.sleep(1000);      // sleep 1 second
@@ -1249,46 +1508,262 @@ elapsed = Time.stopTimer();    // ms elapsed
 Time.measure();        // high-res time for benchmarks
 ```
 
+### pointer (Metal Mode)
+
+Raw memory allocation (only available in `metal` blocks or bare-metal builds):
+
+```obo
+ptr = pointer.alloc(1024);    // allocate 1024 bytes
+pointer.free(ptr);             // free allocation
+```
+
+### mem (Memory Intrinsics)
+
+Direct memory load/store operations — compile to inline LLVM instructions with zero overhead. See [Section 28](#28-memory-intrinsics).
+
 ---
 
-## 25. Memory Regions
+## 27. Memory Regions
 
-OBO supports memory region annotations:
+OBO supports memory region annotations that control how memory is managed:
+
+### safe Block
+
+Garbage-collected, bounds-checked code (the default):
 
 ```obo
 safe
 {
-    // garbage-collected, bounds-checked
+    items = [1, 2, 3];
+    // GC-managed, safety-checked
 }
+```
 
+### metal Block
+
+Manual memory management, raw pointers, no bounds checking:
+
+```obo
 metal
 {
-    // manual memory, raw pointers, no bounds checking
+    ptr = pointer.alloc(4096);
+    defer { pointer.free(ptr); }
+
+    mem.store64(ptr, 42);
+    val = mem.load64(ptr);
+    show val;    // 42
+}
+```
+
+Inside metal blocks:
+- Raw pointer arithmetic is allowed
+- `pointer.alloc()` / `pointer.free()` for heap allocation
+- `mem.load64/store64/load8/store8` for direct memory access
+- `defer` for guaranteed cleanup at scope exit
+- No garbage collection, no bounds checking
+
+### defer (Cleanup)
+
+Deferred blocks execute at scope exit in **reverse order** (LIFO):
+
+```obo
+metal
+{
+    a = pointer.alloc(100);
+    defer { pointer.free(a); }
+
+    b = pointer.alloc(200);
+    defer { pointer.free(b); }
+
+    // ... work with a and b ...
+}
+// b freed first, then a
+```
+
+### own (Single-Owner Auto-Free)
+
+The `own` expression takes ownership of a pointer and automatically frees it at scope exit:
+
+```obo
+metal
+{
+    buffer = own pointer.alloc(4096);
+    // buffer is automatically freed when scope exits
+    // no need for explicit defer/free
 }
 ```
 
 ---
 
-## 26. Running OBO Programs
+## 28. Memory Intrinsics
 
-### Interpreter Mode (Default)
+The `mem` system actor provides direct memory load/store intrinsics. These compile to **inline LLVM instructions** (inttoptr + load/store) with zero function-call overhead.
 
-```bash
-cargo run -- examples/hello.obo
+### Operations
+
+| Function                   | Description                    | Returns  |
+|----------------------------|--------------------------------|----------|
+| `mem.load64(addr)`         | Load 64-bit value from address | `number` |
+| `mem.store64(addr, val)`   | Store 64-bit value at address  | —        |
+| `mem.load8(addr)`          | Load 8-bit value from address  | `number` |
+| `mem.store8(addr, val)`    | Store 8-bit value at address   | —        |
+
+### Usage
+
+```obo
+addr = 0x1000;
+
+// Write a 64-bit value
+mem.store64(addr, 42);
+
+// Read it back
+val = mem.load64(addr);
+
+// Write a single byte
+mem.store8(addr + 8, 255);
+
+// Read a byte
+byte_val = mem.load8(addr + 8);
 ```
 
-### Native Compilation (LLVM)
+### Requirements
 
-```bash
-cargo run -- examples/hello.obo --native
-# Produces: examples/hello (native binary)
-./examples/hello
+- **Native compilation only** — these operations emit inline LLVM IR and cannot run in the interpreter
+- Typically used inside `metal` blocks or `@export` functions in freestanding builds
+- Addresses must be valid — no safety checking is performed
+
+### Real-World Example: Free-List Allocator
+
+The OBO self-hosted allocator (`runtime/obo_alloc.obo`) uses mem intrinsics to implement malloc/free in pure OBO:
+
+```obo
+// Block header: (payload_size << 1) | free_bit
+header_val = (payload_size * 2) bitor 1;
+mem.store64(heap + 8, header_val);
+
+// Walk linked list via load/store
+curr = mem.load64(heap);         // load free list head
+hdr_val = mem.load64(curr - 8);  // load block header
+block_size = hdr_val >> 1;       // extract size (shift out free bit)
+
+// Copy memory word by word
+i = 0;
+forever
+{
+    if (i >= old_size) { stop; }
+    word = mem.load64(ptr + i);
+    mem.store64(new_ptr + i, word);
+    i = i + 8;
+}
 ```
 
-### Run Tests
+---
+
+## 29. Bare-Metal & Freestanding
+
+OBO supports bare-metal compilation for embedded systems, OS kernels, and firmware.
+
+### Freestanding Build
 
 ```bash
-cargo run -- examples/test_all.obo --test
+obo build main.obo --freestanding --emit-ll --no-link
+```
+
+Freestanding mode:
+- Emits a minimal Tier 0 runtime (no libc, no GC)
+- User provides allocator stubs
+- Use `@export` to expose entry points
+- Use `@interrupt` for ISR handlers
+
+### Example: Bare-Metal Program
+
+```obo
+@export("void")
+function setup()
+{
+    x = 42;
+    y = x * 2;
+}
+
+@interrupt
+function timer_isr()
+{
+    n = 1;
+    out n;
+}
+
+@export("i32")
+function add(a as number, b as number)
+{
+    out a + b;
+}
+```
+
+### Cross-Compilation
+
+```bash
+obo build main.obo --freestanding --target=thumbv7em-none-eabi --entry=setup --no-stdlib
+```
+
+### Linker Scripts
+
+```bash
+obo build main.obo --freestanding --target=thumbv7em-none-eabi -T linker.ld
+```
+
+---
+
+## 30. Building & Running
+
+### CLI Commands
+
+```bash
+# Interpret (default)
+obo run file.obo
+
+# Native compilation (LLVM backend)
+obo build file.obo
+
+# Run tests
+obo run file.obo --test
+```
+
+### Build Flags
+
+| Flag                       | Description                                      |
+|----------------------------|--------------------------------------------------|
+| `-o path`                  | Output executable path                           |
+| `--emit-ll`               | Write LLVM IR to `.ll` file                       |
+| `--emit-ll path.ll`       | Write LLVM IR to a specific path                  |
+| `--no-link`               | Skip clang linking; only produce `.ll`            |
+| `--debug` / `-g`          | Emit DWARF debug info, compile with `-g`          |
+| `--no-gc`                 | Disable garbage collection                        |
+| `--freestanding`          | Bare-metal build: Tier 0 runtime, no libc         |
+| `--target=TRIPLE`         | Cross-compilation target (e.g. `thumbv7em-none-eabi`) |
+| `--entry=SYMBOL`          | Custom entry point symbol                         |
+| `--no-stdlib`             | Skip linking libc / stdlib (`-nostdlib`)           |
+| `-T path`                 | Linker script path                                |
+
+### Build Examples
+
+```bash
+# Simple native binary
+obo build examples/hello.obo
+
+# Emit LLVM IR for inspection
+obo build examples/hello.obo --emit-ll
+
+# Debug build
+obo build examples/hello.obo --debug
+
+# No GC (allocations freed at exit only)
+obo build examples/hello.obo --no-gc
+
+# Freestanding bare-metal (LLVM IR only)
+obo build examples/native_freestanding.obo --freestanding --emit-ll --no-link
+
+# Cross-compile for ARM Cortex-M
+obo build main.obo --freestanding --target=thumbv7em-none-eabi --entry=setup --no-stdlib -T flash.ld
 ```
 
 ### Conditional Compilation
@@ -1316,6 +1791,7 @@ Return:         out value;
 Print:          show expr;
 Input:          prompt "msg" into varName;
 If:             if (cond) { } else { }
+Inline If:      expr if cond else expr
 While:          while (cond) { }
 Forever:        forever { }
 Count:          count (i = start, end) { }
@@ -1324,6 +1800,8 @@ Check:          check (expr) { is pattern { } }
 Break:          stop;
 Continue:       restart;
 Entity:         entity Name { field1; field2; }
+Value Type:     value Name { field as f32; }
+Packed:         packed entity Name { field as u16; }
 Actor:          actor Name { public field; function method() { } }
 Inherit:        actor Child is Parent { }
 Trait:          trait Name { function method(); }
@@ -1338,10 +1816,13 @@ Import:         use module;
 Selective:      use func from module;
 Extension:      extend type { function method(self as type) { } }
 Type alias:     type Name = existing;
-Bridge:         bridge "lib" { function name(p as type) out type; }
+Bridge:         bridge "lib" { function name(p as type, ...) out type; }
 Assert:         assert(cond, "message");
 Test:           @test function test_x() { }
-Event:          public event onX;  /  emit onX(data);  /  obj.onX.listen(action(d) { });
+Export:         @export("ret_type") function name(params) { }
+Interrupt:      @interrupt function isr_name() { }
+Event:          public event onX;  /  emit onX(data);
+Listen:         obj.onX.listen(action(d) { });
 Concurrency:    run action() { };  /  wait for task;  /  wait for all;
 Channel:        ch = channel;  /  ch.send(v);  /  ch.receive();
 Atomic:         a = atomic of number(0);  /  a.add(1);  /  a.load();
@@ -1350,4 +1831,10 @@ Cast:           (type)expr
 Safe cast:      (type)expr if possible else fallback
 Interpolation:  "text {expr} more"
 Pipe:           expr |> func
+Bitwise:        x & y   x bitor y   x ^ y   ~x   x << n   x >> n
+Metal:          metal { ptr = pointer.alloc(n); defer { pointer.free(ptr); } }
+Own:            buffer = own pointer.alloc(n);
+Mem:            mem.store64(addr, val);  mem.load64(addr);
+                mem.store8(addr, val);   mem.load8(addr);
+Freestanding:   obo build file.obo --freestanding --emit-ll --no-link
 ```

@@ -1,0 +1,13 @@
+/// Test own — single-owner auto-free at metal scope exit
+
+function main() {
+    metal {
+        buffer = own pointer.alloc(4096);
+        show "allocated buffer";
+        show buffer;
+
+        // buffer is auto-freed when metal block exits — no manual free needed
+    }
+
+    show "done — buffer was auto-freed";
+}

@@ -336,9 +336,15 @@ impl Interpreter {
             }
             Statement::SafeBlock(body, _) | Statement::MetalBlock(body, _) => {
                 self.env.push_scope();
-                let signal = self.exec_statements(body)?;
+                let signal = self.exec_metal_or_safe_block(body)?;
                 self.env.pop_scope();
                 Ok(signal)
+            }
+            Statement::Defer(_, _) => {
+                // Defer statements are handled by exec_metal_or_safe_block.
+                // If we reach here, it means defer was used outside a metal block
+                // (checker should have caught this).
+                Err("defer is only allowed inside metal blocks".to_string())
             }
             Statement::Block(stmts) => {
                 self.env.push_scope();
@@ -541,6 +547,26 @@ impl Interpreter {
             (Value::Byte(a), Value::Byte(b)) => Ok(a.cmp(b) as i32),
             (Value::Byte(a), Value::Number(b)) => Ok((*a as i64).cmp(b) as i32),
             (Value::Number(a), Value::Byte(b)) => Ok(a.cmp(&(*b as i64)) as i32),
+            (Value::FixedInt(a, _), Value::FixedInt(b, _)) => Ok(a.cmp(b) as i32),
+            (Value::FixedInt(a, _), Value::Number(b)) => Ok(a.cmp(b) as i32),
+            (Value::Number(a), Value::FixedInt(b, _)) => Ok(a.cmp(b) as i32),
+            (Value::FixedInt(a, _), Value::Byte(b)) => Ok(a.cmp(&(*b as i64)) as i32),
+            (Value::Byte(a), Value::FixedInt(b, _)) => Ok((*a as i64).cmp(b) as i32),
+            (Value::Float32(a), Value::Float32(b)) => {
+                Ok(a.partial_cmp(b).map(|o| o as i32).unwrap_or(0))
+            }
+            (Value::Float32(a), Value::Decimal(b)) => {
+                Ok((*a as f64).partial_cmp(b).map(|o| o as i32).unwrap_or(0))
+            }
+            (Value::Decimal(a), Value::Float32(b)) => {
+                Ok(a.partial_cmp(&(*b as f64)).map(|o| o as i32).unwrap_or(0))
+            }
+            (Value::Float32(a), Value::Number(b)) => {
+                Ok((*a as f64).partial_cmp(&(*b as f64)).map(|o| o as i32).unwrap_or(0))
+            }
+            (Value::Number(a), Value::Float32(b)) => {
+                Ok((*a as f64).partial_cmp(&(*b as f64)).map(|o| o as i32).unwrap_or(0))
+            }
             _ => Err(format!(
                 "Obo: Can't compare {} with {} 🤨",
                 a.type_name(),
@@ -552,7 +578,7 @@ impl Interpreter {
     pub(super) fn coerce_to_type(&self, value: Value, te: &TypeExpr) -> Result<Value, String> {
         if let TypeExpr::Named(name, _) = te {
             match name.as_str() {
-                "byte" => {
+                "byte" | "u8" => {
                     let n = value.to_number().ok_or_else(|| {
                         format!("Obo: Can't convert {} to byte 🤨", value.type_name())
                     })?;
@@ -564,9 +590,50 @@ impl Interpreter {
                     }
                     Ok(Value::Byte(n as u8))
                 }
+                "i8" | "i16" | "i32" | "u16" | "u32" | "u64" => {
+                    use crate::interpreter::value::IntWidth;
+                    let w = match name.as_str() {
+                        "i8" => IntWidth::I8, "i16" => IntWidth::I16, "i32" => IntWidth::I32,
+                        "u16" => IntWidth::U16, "u32" => IntWidth::U32, "u64" => IntWidth::U64,
+                        _ => unreachable!(),
+                    };
+                    let n = value.to_number().ok_or_else(|| {
+                        format!("Obo: Can't convert {} to {} 🤨", value.type_name(), w.name())
+                    })?;
+                    let n128 = n as i128;
+                    if n128 < w.min() || n128 > w.max() {
+                        return Err(format!(
+                            "Obo: {} is out of range for {} (need {}–{}) 😬",
+                            n, w.name(), w.min(), w.max()
+                        ));
+                    }
+                    Ok(Value::FixedInt(n, w))
+                }
+                "i64" | "number" => {
+                    let n = value.to_number().ok_or_else(|| {
+                        format!("Obo: Can't convert {} to number 🤨", value.type_name())
+                    })?;
+                    Ok(Value::Number(n))
+                }
                 "pointer" => {
                     let n = value.to_number().unwrap_or(0);
                     Ok(Value::Pointer(n as u64))
+                }
+                "handle" => {
+                    let n = value.to_number().unwrap_or(0);
+                    Ok(Value::Handle(n as u64))
+                }
+                "f32" => {
+                    let d = value.to_decimal().ok_or_else(|| {
+                        format!("Obo: Can't convert {} to f32 🤨", value.type_name())
+                    })?;
+                    Ok(Value::Float32(d as f32))
+                }
+                "decimal" | "f64" => {
+                    let d = value.to_decimal().ok_or_else(|| {
+                        format!("Obo: Can't convert {} to decimal 🤨", value.type_name())
+                    })?;
+                    Ok(Value::Decimal(d))
                 }
                 _ => Ok(value),
             }
@@ -607,5 +674,60 @@ impl Interpreter {
             }
         }
         false
+    }
+
+    /// Execute a metal or safe block, collecting defer statements and running
+    /// them in LIFO order on exit (normal or early signal like Out/Stop).
+    /// Also tracks `own` variables for auto-free at scope exit.
+    fn exec_metal_or_safe_block(&mut self, stmts: &[Statement]) -> Result<Signal, String> {
+        let mut defers: Vec<&Vec<Statement>> = Vec::new();
+        let mut owned_vars: Vec<String> = Vec::new();
+        let mut result_signal = Signal::None;
+
+        for stmt in stmts {
+            if let Statement::Defer(body, _) = stmt {
+                defers.push(body);
+                continue;
+            }
+
+            // Track owned variables from VarDecl: x = own expr;
+            if let Statement::VarDecl(v) = stmt {
+                if matches!(&v.initializer, Expr::Own(_, _)) {
+                    owned_vars.push(v.name.clone());
+                }
+            }
+            // Track owned variables from Assignment: x = own expr;
+            if let Statement::Assignment(a) = stmt {
+                if matches!(&a.value, Expr::Own(_, _)) {
+                    if let Expr::Identifier(name, _) = &a.target {
+                        owned_vars.push(name.clone());
+                    }
+                }
+            }
+
+            let signal = self.exec_statement(stmt)?;
+            match signal {
+                Signal::None => {}
+                other => {
+                    result_signal = other;
+                    break;
+                }
+            }
+        }
+
+        // Run defers in reverse order (LIFO)
+        for defer_body in defers.iter().rev() {
+            let _signal = self.exec_statements(defer_body)?;
+        }
+
+        // Free owned variables in reverse order (LIFO)
+        for var_name in owned_vars.iter().rev() {
+            // In interpreter mode, just null out the variable (simulates free)
+            if let Some(_val) = self.env.get(var_name) {
+                self.env.define_or_set(var_name, Value::Null);
+            }
+        }
+
+        Ok(result_signal)
     }
 }

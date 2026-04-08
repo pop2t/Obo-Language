@@ -1,0 +1,663 @@
+// OBO Self-Hosted Runtime — Mark-Sweep Garbage Collector (Tier 0)
+//
+// Port of the C runtime's GC (obo_rt.c) to pure OBO metal.
+//
+// All state lives in a GC context struct so there are no global variables.
+// The ctx pointer is passed as the first argument to all functions.
+//
+// ── GC Context layout (at offset from ctx) ──
+//   0:   head        (i64) — pointer to first GCNode in sweep list
+//   8:   alloc_count (i64) — number of tracked allocations
+//   16:  threshold   (i64) — trigger collection when alloc_count > threshold
+//   24:  paused      (i64) — 1 = GC paused (skip registration)
+//   32:  root_top    (i64) — current root stack index
+//   40:  roots       (i64) — pointer to root stack array (4096 * 8 bytes)
+//   48:  ht          (i64) — pointer to hash table array (16384 * 8 bytes)
+//   56:  pool_head   (i64) — pointer to first chunk in node pool
+//   64:  pool_idx    (i64) — current index in current chunk
+//   72:  free_list   (i64) — pointer to first free GCNode
+// Total context size: 80 bytes
+//
+// ── GCNode layout (32 bytes each) ──
+//   0:  ptr       (i64) — tracked pointer
+//   8:  mark_kind (i64) — low byte = kind, byte 1 = mark flag
+//   16: next      (i64) — next in sweep list
+//   24: ht_next   (i64) — next in hash table chain
+//
+// ── GC Kind constants ──
+//   STRING=0, LIST_I64=1, MAP=2, ENTITY=3, MIXED_LIST=4,
+//   CLOSURE=5, VALUE=6, TASK=7, OPAQUE=8, ENTITY_SLOTTED=9
+//
+// ── Node Pool Chunk layout ──
+//   0:   next_chunk (i64) — pointer to next chunk
+//   8+:  nodes[0..CHUNK_SIZE-1] — each 32 bytes
+//   Chunk alloc size: 8 + CHUNK_SIZE * 32
+
+// Constants
+// GC_HT_BITS   = 14
+// GC_HT_SIZE   = 16384
+// GC_ROOT_MAX  = 4096
+// GC_NODE_CHUNK = 4096
+// GC_NODE_SIZE  = 32
+// GC_CTX_SIZE   = 80
+// MARK_SHIFT    = 8  (mark flag stored in bits [15:8] of mark_kind)
+
+// ── Initialize GC context ──
+// Allocates the context, hash table, and root stack.
+// Returns: pointer to GC context (i64)
+@export("i64")
+function rt_gc_init()
+{
+    // Allocate context struct (80 bytes)
+    ctx = pointer.alloc(80);
+    if (ctx == 0) { out 0; }
+    mem.zero(ctx, 80);
+
+    // head = 0, alloc_count = 0, threshold = 256, paused = 0
+    mem.store64(ctx + 16, 256);
+
+    // Allocate root stack: 4096 * 8 = 32768 bytes
+    roots = pointer.alloc(32768);
+    if (roots == 0) { pointer.free(ctx); out 0; }
+    mem.zero(roots, 32768);
+    mem.store64(ctx + 40, roots);
+
+    // Allocate hash table: 16384 * 8 = 131072 bytes
+    ht = pointer.alloc(131072);
+    if (ht == 0) { pointer.free(roots); pointer.free(ctx); out 0; }
+    mem.zero(ht, 131072);
+    mem.store64(ctx + 48, ht);
+
+    // pool_head = 0, pool_idx = 4096 (force first chunk alloc), free_list = 0
+    mem.store64(ctx + 64, 4096);
+
+    out ctx;
+}
+
+// ── Internal: allocate a GCNode from the pool ──
+@export("i64")
+function rt_gc_node_alloc(ctx as number)
+{
+    // Check free list first
+    fl = mem.load64(ctx + 72);
+    if (fl != 0) {
+        // Pop from free list (next is at node+16)
+        nxt = mem.load64(fl + 16);
+        mem.store64(ctx + 72, nxt);
+        out fl;
+    }
+
+    // Check if current chunk has space
+    pool_idx = mem.load64(ctx + 64);
+    if (pool_idx >= 4096) {
+        // Allocate new chunk: 8 + 4096 * 32 = 131080 bytes
+        chunk = pointer.alloc(131080);
+        if (chunk == 0) { out 0; }
+        // Link to previous chunks
+        old_head = mem.load64(ctx + 56);
+        mem.store64(chunk, old_head);
+        mem.store64(ctx + 56, chunk);
+        mem.store64(ctx + 64, 0);
+        pool_idx = 0;
+    }
+
+    // Get node from current chunk
+    chunk = mem.load64(ctx + 56);
+    node = chunk + 8 + pool_idx * 32;
+    mem.store64(ctx + 64, pool_idx + 1);
+    out node;
+}
+
+// ── Internal: return a GCNode to the free list ──
+@export("void")
+function rt_gc_node_free(ctx as number, node as number)
+{
+    fl = mem.load64(ctx + 72);
+    mem.store64(node + 16, fl);
+    mem.store64(ctx + 72, node);
+}
+
+// ── Internal: hash a pointer for the hash table ──
+@export("i64")
+function rt_gc_ptr_hash(ptr as number)
+{
+    // Same algorithm as C: (ptr >> 4) ^ (ptr >> 18), masked to 16383
+    // OBO uses arithmetic shift; we want logical shift.
+    // For positive pointers (user-space), arithmetic shift is fine.
+    h = (ptr >> 4) ^ (ptr >> 18);
+    h = h & 16383;
+    if (h < 0) { h = 0 - h; }
+    out h;
+}
+
+// ── Internal: insert node into hash table ──
+@export("void")
+function rt_gc_ht_insert(ctx as number, node as number)
+{
+    ptr = mem.load64(node);
+    h = rt_gc_ptr_hash(ptr);
+    ht = mem.load64(ctx + 48);
+    slot_addr = ht + h * 8;
+    old = mem.load64(slot_addr);
+    mem.store64(node + 24, old);
+    mem.store64(slot_addr, node);
+}
+
+// ── Internal: remove node from hash table ──
+@export("void")
+function rt_gc_ht_remove(ctx as number, node as number)
+{
+    ptr = mem.load64(node);
+    h = rt_gc_ptr_hash(ptr);
+    ht = mem.load64(ctx + 48);
+    slot_addr = ht + h * 8;
+
+    // Walk chain to find and unlink
+    prev_addr = slot_addr;
+    curr = mem.load64(prev_addr);
+    forever {
+        if (curr == 0) { stop; }
+        if (curr == node) {
+            // Unlink: prev -> node.ht_next
+            nxt = mem.load64(node + 24);
+            mem.store64(prev_addr, nxt);
+            stop;
+        }
+        prev_addr = curr + 24;
+        curr = mem.load64(prev_addr);
+    }
+}
+
+// ── Internal: find GCNode by tracked pointer ──
+@export("i64")
+function rt_gc_find_node(ctx as number, ptr as number)
+{
+    h = rt_gc_ptr_hash(ptr);
+    ht = mem.load64(ctx + 48);
+    slot_addr = ht + h * 8;
+    curr = mem.load64(slot_addr);
+    forever {
+        if (curr == 0) { out 0; }
+        node_ptr = mem.load64(curr);
+        if (node_ptr == ptr) { out curr; }
+        curr = mem.load64(curr + 24);
+    }
+}
+
+// ── Push a root slot ──
+@export("void")
+function rt_gc_push_root(ctx as number, slot as number)
+{
+    top = mem.load64(ctx + 32);
+    if (top >= 4096) { out 0; }
+    roots = mem.load64(ctx + 40);
+    mem.store64(roots + top * 8, slot);
+    mem.store64(ctx + 32, top + 1);
+}
+
+// ── Pop N roots ──
+@export("void")
+function rt_gc_pop_roots(ctx as number, n as number)
+{
+    top = mem.load64(ctx + 32);
+    top = top - n;
+    if (top < 0) { top = 0; }
+    mem.store64(ctx + 32, top);
+}
+
+// ── Pause / Resume GC ──
+@export("void")
+function rt_gc_pause(ctx as number)
+{
+    mem.store64(ctx + 24, 1);
+}
+
+@export("void")
+function rt_gc_resume(ctx as number)
+{
+    mem.store64(ctx + 24, 0);
+}
+
+// ── Internal: mark phase (BFS from roots) ──
+//
+// Uses a resizable worklist (queue) allocated on the system heap.
+// Walks interior pointers for entities, maps, mixed lists, etc.
+// Returns: 0 = success, 1 = OOM (caller must skip sweep)
+@export("i64")
+function rt_gc_mark_phase(ctx as number)
+{
+    // Allocate worklist: start with capacity 64
+    qcap = 64;
+    queue = pointer.alloc(qcap * 8);
+    if (queue == 0) { out 1; }
+    qlen = 0;
+    mark_ok = 1;
+
+    // Enqueue all root slot values
+    top = mem.load64(ctx + 32);
+    roots = mem.load64(ctx + 40);
+    i = 0;
+    forever {
+        if (i >= top) { stop; }
+        slot = mem.load64(roots + i * 8);
+        if (slot != 0) {
+            val = mem.load64(slot);
+            if (val != 0) {
+                // Enqueue val
+                if (qlen >= qcap) {
+                    qcap = qcap * 2;
+                    nq = pointer.alloc(qcap * 8);
+                    if (nq != 0) {
+                        mem.copy(nq, queue, qlen * 8);
+                        pointer.free(queue);
+                        queue = nq;
+                    } else {
+                        mark_ok = 0;
+                    }
+                }
+                if (mark_ok == 1) {
+                    mem.store64(queue + qlen * 8, val);
+                    qlen = qlen + 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+
+    // BFS: process worklist
+    qi = 0;
+    forever {
+        if (qi >= qlen) { stop; }
+        p = mem.load64(queue + qi * 8);
+        qi = qi + 1;
+
+        node = rt_gc_find_node(ctx, p);
+        if (node == 0) { restart; }
+
+        // Check if already marked (mark = 2, stored in byte 1 of mark_kind)
+        mk = mem.load64(node + 8);
+        mark_val = (mk >> 8) & 255;
+        if (mark_val == 2) { restart; }
+
+        // Set mark = 2
+        kind_val = mk & 255;
+        mk = kind_val bitor (2 * 256);
+        mem.store64(node + 8, mk);
+
+        // Trace interior pointers based on kind
+        // ENTITY = 3: offset 0: _slotted(8), offset 8: type_name(8), offset 16: fields(8)
+        if (kind_val == 3) {
+            fields_ptr = mem.load64(p + 16);
+            if (fields_ptr != 0) {
+                if (qlen >= qcap) { qcap = qcap * 2; nq = pointer.alloc(qcap * 8); if (nq != 0) { mem.copy(nq, queue, qlen * 8); pointer.free(queue); queue = nq; } else { mark_ok = 0; } }
+                if (mark_ok == 1) { mem.store64(queue + qlen * 8, fields_ptr); qlen = qlen + 1; }
+            }
+        }
+
+        // ENTITY_SLOTTED = 9: offset 16: nslots(i32), offset 24: field_names(8), offset 32: slots[](16 each)
+        if (kind_val == 9) {
+            nslots = mem.load32(p + 16);
+            j = 0;
+            forever {
+                if (j >= nslots) { stop; }
+                slot_base = p + 32 + j * 16;
+                stag = mem.load64(slot_base);
+                if (stag >= 2) {
+                    if (stag <= 4) {
+                        payload = mem.load64(slot_base + 8);
+                        if (payload != 0) {
+                            if (qlen >= qcap) { qcap = qcap * 2; nq = pointer.alloc(qcap * 8); if (nq != 0) { mem.copy(nq, queue, qlen * 8); pointer.free(queue); queue = nq; } else { mark_ok = 0; } }
+                            if (mark_ok == 1) { mem.store64(queue + qlen * 8, payload); qlen = qlen + 1; }
+                        }
+                    }
+                }
+                j = j + 1;
+            }
+        }
+
+        // MAP = 2: offset 24: order_head. MapEntry: 0:key, 8:val.tag, 16:val.payload, 24:next, 32:order_next
+        if (kind_val == 2) {
+            entry = mem.load64(p + 24);
+            forever {
+                if (entry == 0) { stop; }
+                etag = mem.load64(entry + 8);
+                if (etag >= 2) {
+                    if (etag <= 4) {
+                        epay = mem.load64(entry + 16);
+                        if (epay != 0) {
+                            if (qlen >= qcap) { qcap = qcap * 2; nq = pointer.alloc(qcap * 8); if (nq != 0) { mem.copy(nq, queue, qlen * 8); pointer.free(queue); queue = nq; } else { mark_ok = 0; } }
+                            if (mark_ok == 1) { mem.store64(queue + qlen * 8, epay); qlen = qlen + 1; }
+                        }
+                    }
+                }
+                entry = mem.load64(entry + 32);
+            }
+        }
+
+        // MIXED_LIST = 4: offset 0: len, offset 16: items (16 bytes each)
+        if (kind_val == 4) {
+            ml_len = mem.load64(p);
+            j = 0;
+            forever {
+                if (j >= ml_len) { stop; }
+                item_base = p + 16 + j * 16;
+                itag = mem.load64(item_base);
+                if (itag >= 2) {
+                    if (itag <= 4) {
+                        ipay = mem.load64(item_base + 8);
+                        if (ipay != 0) {
+                            if (qlen >= qcap) { qcap = qcap * 2; nq = pointer.alloc(qcap * 8); if (nq != 0) { mem.copy(nq, queue, qlen * 8); pointer.free(queue); queue = nq; } else { mark_ok = 0; } }
+                            if (mark_ok == 1) { mem.store64(queue + qlen * 8, ipay); qlen = qlen + 1; }
+                        }
+                    }
+                }
+                j = j + 1;
+            }
+        }
+
+        // VALUE = 6: offset 0: tag, offset 8: payload
+        if (kind_val == 6) {
+            vtag = mem.load64(p);
+            if (vtag >= 2) {
+                if (vtag <= 4) {
+                    vpay = mem.load64(p + 8);
+                    if (vpay != 0) {
+                        if (qlen >= qcap) { qcap = qcap * 2; nq = pointer.alloc(qcap * 8); if (nq != 0) { mem.copy(nq, queue, qlen * 8); pointer.free(queue); queue = nq; } else { mark_ok = 0; } }
+                        if (mark_ok == 1) { mem.store64(queue + qlen * 8, vpay); qlen = qlen + 1; }
+                    }
+                }
+            }
+        }
+
+        // TASK = 7: offset 8: closure pointer
+        if (kind_val == 7) {
+            closure_ptr = mem.load64(p + 8);
+            if (closure_ptr != 0) {
+                if (qlen >= qcap) { qcap = qcap * 2; nq = pointer.alloc(qcap * 8); if (nq != 0) { mem.copy(nq, queue, qlen * 8); pointer.free(queue); queue = nq; } else { mark_ok = 0; } }
+                if (mark_ok == 1) { mem.store64(queue + qlen * 8, closure_ptr); qlen = qlen + 1; }
+            }
+        }
+
+        // STRING=0, LIST_I64=1, CLOSURE=5, OPAQUE=8: no interior pointers
+    }
+
+    pointer.free(queue);
+    if (mark_ok == 0) { out 1; }
+    out 0;
+}
+
+// ── Internal: free an object by kind ──
+// This mirrors gc_free_object in the C runtime.
+// For the self-hosted version, we just pointer.free() the allocation.
+// Complex types (maps, entities) need their sub-allocations freed.
+@export("void")
+function rt_gc_free_object(node as number)
+{
+    p = mem.load64(node);
+    mk = mem.load64(node + 8);
+    kind_val = mk & 255;
+
+    // STRING=0, LIST_I64=1, CLOSURE=5, OPAQUE=8: just free the pointer
+    if (kind_val == 0) { pointer.free(p); out 0; }
+    if (kind_val == 1) { pointer.free(p); out 0; }
+    if (kind_val == 5) { pointer.free(p); out 0; }
+    if (kind_val == 8) { pointer.free(p); out 0; }
+
+    // MAP=2: free each MapEntry, then buckets, then the map itself
+    if (kind_val == 2) {
+        // Walk order_head linked list and free entries
+        entry = mem.load64(p + 24);
+        forever {
+            if (entry == 0) { stop; }
+            nxt = mem.load64(entry + 32);
+            // Free string value if tag==STR
+            etag = mem.load64(entry + 8);
+            if (etag == 1) {
+                estr = mem.load64(entry + 16);
+                if (estr != 0) { pointer.free(estr); }
+            }
+            pointer.free(entry);
+            entry = nxt;
+        }
+        // Free buckets array
+        buckets = mem.load64(p);
+        if (buckets != 0) { pointer.free(buckets); }
+        pointer.free(p);
+        out 0;
+    }
+
+    // ENTITY=3: free type_name, fields map, then entity
+    if (kind_val == 3) {
+        tname = mem.load64(p + 8);
+        if (tname != 0) { pointer.free(tname); }
+        fields = mem.load64(p + 16);
+        if (fields != 0) {
+            // Free map entries
+            entry = mem.load64(fields + 24);
+            forever {
+                if (entry == 0) { stop; }
+                nxt = mem.load64(entry + 32);
+                etag = mem.load64(entry + 8);
+                if (etag == 1) {
+                    estr = mem.load64(entry + 16);
+                    if (estr != 0) { pointer.free(estr); }
+                }
+                pointer.free(entry);
+                entry = nxt;
+            }
+            buckets = mem.load64(fields);
+            if (buckets != 0) { pointer.free(buckets); }
+            pointer.free(fields);
+        }
+        pointer.free(p);
+        out 0;
+    }
+
+    // MIXED_LIST=4: free string values in items, then the list
+    if (kind_val == 4) {
+        ml_len = mem.load64(p);
+        j = 0;
+        forever {
+            if (j >= ml_len) { stop; }
+            item_base = p + 16 + j * 16;
+            itag = mem.load64(item_base);
+            if (itag == 1) {
+                istr = mem.load64(item_base + 8);
+                if (istr != 0) { pointer.free(istr); }
+            }
+            j = j + 1;
+        }
+        pointer.free(p);
+        out 0;
+    }
+
+    // VALUE=6: OboValue — free if STR, then free struct
+    if (kind_val == 6) {
+        vtag = mem.load64(p);
+        if (vtag == 1) {
+            vstr = mem.load64(p + 8);
+            if (vstr != 0) { pointer.free(vstr); }
+        }
+        pointer.free(p);
+        out 0;
+    }
+
+    // ENTITY_SLOTTED=9: free field_names, free slot STR values, free entity
+    if (kind_val == 9) {
+        fnames = mem.load64(p + 24);
+        if (fnames != 0) { pointer.free(fnames); }
+        nslots = mem.load32(p + 16);
+        j = 0;
+        forever {
+            if (j >= nslots) { stop; }
+            slot_base = p + 32 + j * 16;
+            stag = mem.load64(slot_base);
+            if (stag == 1) {
+                sstr = mem.load64(slot_base + 8);
+                if (sstr != 0) { pointer.free(sstr); }
+            }
+            j = j + 1;
+        }
+        pointer.free(p);
+        out 0;
+    }
+
+    // TASK=7 or anything else: just free
+    pointer.free(p);
+}
+
+// ── Collect: mark + sweep ──
+@export("void")
+function rt_gc_collect(ctx as number)
+{
+    // Mark phase — if OOM, skip sweep (conservatively keep everything alive)
+    mark_result = rt_gc_mark_phase(ctx);
+    if (mark_result != 0) { out 0; }
+
+    // Sweep phase: walk the sweep list (head at ctx+0)
+    prev_addr = ctx;
+    curr = mem.load64(ctx);
+    forever {
+        if (curr == 0) { stop; }
+        mk = mem.load64(curr + 8);
+        mark_val = (mk >> 8) & 255;
+        nxt = mem.load64(curr + 16);
+
+        if (mark_val == 0) {
+            // Unmarked — free
+            mem.store64(prev_addr, nxt);
+            rt_gc_ht_remove(ctx, curr);
+            rt_gc_free_object(curr);
+            rt_gc_node_free(ctx, curr);
+            // Decrement alloc_count
+            ac = mem.load64(ctx + 8);
+            mem.store64(ctx + 8, ac - 1);
+            curr = nxt;
+        } else {
+            // Marked — clear mark for next cycle
+            kind_val = mk & 255;
+            mem.store64(curr + 8, kind_val);
+            prev_addr = curr + 16;
+            curr = nxt;
+        }
+    }
+}
+
+// ── Register a pointer with the GC ──
+// kind: STRING=0, LIST_I64=1, MAP=2, ENTITY=3, MIXED_LIST=4,
+//       CLOSURE=5, VALUE=6, TASK=7, OPAQUE=8, ENTITY_SLOTTED=9
+@export("void")
+function rt_gc_register(ctx as number, ptr as number, kind as number)
+{
+    if (ptr == 0) { out 0; }
+    paused = mem.load64(ctx + 24);
+    if (paused != 0) { out 0; }
+
+    node = rt_gc_node_alloc(ctx);
+    if (node == 0) { out 0; }
+
+    // Write GCNode fields
+    mem.store64(node, ptr);
+    // mark_kind: mark=1 (bits 8-15), kind (bits 0-7)
+    mem.store64(node + 8, kind bitor 256);
+    // Insert into sweep list (prepend)
+    head = mem.load64(ctx);
+    mem.store64(node + 16, head);
+    mem.store64(ctx, node);
+    // Insert into hash table
+    rt_gc_ht_insert(ctx, node);
+
+    // Increment alloc_count
+    ac = mem.load64(ctx + 8) + 1;
+    mem.store64(ctx + 8, ac);
+
+    // Check threshold
+    thresh = mem.load64(ctx + 16);
+    if (ac > thresh) {
+        rt_gc_collect(ctx);
+        ac2 = mem.load64(ctx + 8);
+        if (ac2 > thresh / 2) {
+            mem.store64(ctx + 16, thresh * 2);
+        }
+    }
+}
+
+// ── Register legacy/unknown allocation ──
+@export("void")
+function rt_gc_register_opaque(ctx as number, ptr as number)
+{
+    rt_gc_register(ctx, ptr, 8);
+}
+
+// ── Track a string allocation ──
+@export("void")
+function rt_gc_track_string(ctx as number, ptr as number)
+{
+    rt_gc_register(ctx, ptr, 0);
+}
+
+// ── Free all tracked objects (cleanup at exit) ──
+@export("void")
+function rt_gc_free_all(ctx as number)
+{
+    curr = mem.load64(ctx);
+    forever {
+        if (curr == 0) { stop; }
+        nxt = mem.load64(curr + 16);
+        rt_gc_free_object(curr);
+        curr = nxt;
+    }
+    mem.store64(ctx, 0);
+    mem.store64(ctx + 8, 0);
+
+    // Free pool chunks
+    chunk = mem.load64(ctx + 56);
+    forever {
+        if (chunk == 0) { stop; }
+        nxt = mem.load64(chunk);
+        pointer.free(chunk);
+        chunk = nxt;
+    }
+    mem.store64(ctx + 56, 0);
+    mem.store64(ctx + 64, 4096);
+    mem.store64(ctx + 72, 0);
+
+    // Zero the hash table
+    ht = mem.load64(ctx + 48);
+    if (ht != 0) { mem.zero(ht, 131072); }
+}
+
+// ── Destroy GC context (free everything) ──
+@export("void")
+function rt_gc_destroy(ctx as number)
+{
+    rt_gc_free_all(ctx);
+    roots = mem.load64(ctx + 40);
+    if (roots != 0) { pointer.free(roots); }
+    ht = mem.load64(ctx + 48);
+    if (ht != 0) { pointer.free(ht); }
+    pointer.free(ctx);
+}
+
+// ── Get allocation count ──
+@export("i64")
+function rt_gc_alloc_count(ctx as number)
+{
+    out mem.load64(ctx + 8);
+}
+
+// ── Get threshold ──
+@export("i64")
+function rt_gc_threshold(ctx as number)
+{
+    out mem.load64(ctx + 16);
+}
+
+// ── Check if a pointer is tracked ──
+@export("i64")
+function rt_gc_is_tracked(ctx as number, ptr as number)
+{
+    node = rt_gc_find_node(ctx, ptr);
+    if (node != 0) { out 1; }
+    out 0;
+}

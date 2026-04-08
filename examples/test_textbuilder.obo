@@ -1,0 +1,39 @@
+// TextBuilder test
+function main()
+{
+    tb = TextBuilder();
+    tb.append("Hello");
+    tb.append(", ");
+    tb.append("world");
+    tb.append("!");
+    result = tb.build();
+    show "Built: {result}";
+
+    // Append numbers and chars
+    tb2 = TextBuilder();
+    tb2.append("Count: ");
+    tb2.append(42);
+    tb2.append(" items");
+    show "Numbers: {tb2.build()}";
+
+    // Length
+    tb3 = TextBuilder();
+    tb3.append("abc");
+    show "Length: {tb3.length()}";
+
+    // Clear and reuse
+    tb3.clear();
+    tb3.append("fresh");
+    show "After clear: {tb3.build()}";
+
+    // Build large string efficiently
+    tb4 = TextBuilder(1000);
+    i = 0;
+    while (i < 100)
+    {
+        tb4.append("x");
+        i = i + 1;
+    }
+    show "Large length: {tb4.length()}";
+    show "Large result: {tb4.build()}";
+}

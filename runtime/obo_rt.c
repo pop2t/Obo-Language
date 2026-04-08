@@ -1,4 +1,161 @@
 /* OBO native runtime — strings, lists, maps, entities, tagged values, stdlib hooks. */
+
+/* ── Freestanding (Tier 0) mode ──
+   When OBO_FREESTANDING is defined the runtime avoids all libc / POSIX
+   dependencies.  The embedder must supply three symbols:
+
+       void* obo_platform_alloc(unsigned long size);
+       void  obo_platform_free(void* ptr);
+       void  obo_platform_putchar(int ch);
+
+   Everything else (GC, entities, lists, maps, strings) is built on top. */
+
+#ifdef OBO_FREESTANDING
+
+/* Minimal freestanding type definitions */
+typedef signed long long int64_t;
+typedef unsigned long long uint64_t;
+typedef unsigned char uint8_t;
+typedef unsigned short uint16_t;
+typedef unsigned int uint32_t;
+typedef unsigned long size_t;
+#define NULL ((void*)0)
+#define INT64_MAX 9223372036854775807LL
+#define INT64_MIN (-INT64_MAX - 1)
+
+/* User-provided platform stubs */
+extern void* obo_platform_alloc(unsigned long size);
+extern void  obo_platform_free(void* ptr);
+extern void  obo_platform_putchar(int ch);
+
+/* Route malloc/free through platform stubs */
+static void* malloc(size_t n)  { return obo_platform_alloc(n); }
+static void  free(void* p)     { obo_platform_free(p); }
+static void* realloc(void* p, size_t n) {
+    /* Minimal realloc: alloc new, copy, free old.
+       Caller must tolerate over-copy (copies n bytes even if old was smaller). */
+    void* q = malloc(n);
+    if (q && p) {
+        char* dst = (char*)q; char* src = (char*)p;
+        for (size_t i = 0; i < n; i++) dst[i] = src[i];
+        free(p);
+    }
+    return q;
+}
+
+/* Minimal string ops */
+static size_t strlen(const char* s) { size_t n = 0; while (s[n]) n++; return n; }
+static int strcmp(const char* a, const char* b) { while (*a && *a == *b) { a++; b++; } return (unsigned char)*a - (unsigned char)*b; }
+static char* strcpy(char* d, const char* s) { char* r = d; while ((*d++ = *s++)); return r; }
+static void* memcpy(void* d, const void* s, size_t n) { char* dd = (char*)d; const char* ss = (const char*)s; for (size_t i = 0; i < n; i++) dd[i] = ss[i]; return d; }
+static void* memset(void* d, int c, size_t n) { unsigned char* p = (unsigned char*)d; for (size_t i = 0; i < n; i++) p[i] = (unsigned char)c; return d; }
+static int memcmp(const void* a, const void* b, size_t n) { const unsigned char* aa = (const unsigned char*)a; const unsigned char* bb = (const unsigned char*)b; for (size_t i = 0; i < n; i++) { if (aa[i] != bb[i]) return aa[i] - bb[i]; } return 0; }
+static char* strncpy(char* d, const char* s, size_t n) { size_t i; for (i = 0; i < n && s[i]; i++) d[i] = s[i]; for (; i < n; i++) d[i] = 0; return d; }
+static char* strstr(const char* h, const char* n) { size_t nl = strlen(n); if (!nl) return (char*)h; for (; *h; h++) if (memcmp(h, n, nl) == 0) return (char*)h; return NULL; }
+static char* strchr(const char* s, int c) { while (*s) { if (*s == (char)c) return (char*)s; s++; } return c == 0 ? (char*)s : NULL; }
+static char* strdup(const char* s) { size_t n = strlen(s) + 1; char* d = (char*)malloc(n); if (d) memcpy(d, s, n); return d; }
+static long long strtoll(const char* s, char** endptr, int base) {
+    (void)base; long long r = 0; int neg = 0;
+    while (*s == ' ') s++;
+    if (*s == '-') { neg = 1; s++; } else if (*s == '+') s++;
+    while (*s >= '0' && *s <= '9') { r = r * 10 + (*s - '0'); s++; }
+    if (endptr) *endptr = (char*)s;
+    return neg ? -r : r;
+}
+static double strtod(const char* s, char** endptr) {
+    double r = 0.0; int neg = 0;
+    while (*s == ' ') s++;
+    if (*s == '-') { neg = 1; s++; } else if (*s == '+') s++;
+    while (*s >= '0' && *s <= '9') { r = r * 10.0 + (*s - '0'); s++; }
+    if (*s == '.') { s++; double f = 0.1; while (*s >= '0' && *s <= '9') { r += (*s - '0') * f; f *= 0.1; s++; } }
+    if (endptr) *endptr = (char*)s;
+    return neg ? -r : r;
+}
+
+/* Minimal snprintf (integer + string support only) */
+static int obo_fs_snprintf(char* buf, size_t sz, const char* fmt, ...);
+/* We only need a very basic formatter for the runtime's own uses */
+static void obo_fs_print_str(const char* s) { while (*s) obo_platform_putchar(*s++); }
+static void obo_fs_print_i64(int64_t n) {
+    if (n < 0) { obo_platform_putchar('-'); n = -n; }
+    char buf[21]; int i = 0;
+    do { buf[i++] = '0' + (int)(n % 10); n /= 10; } while (n);
+    while (i--) obo_platform_putchar(buf[i]);
+}
+
+/* printf/fprintf stubs that use obo_platform_putchar */
+#define printf(...) obo_fs_printf(__VA_ARGS__)
+#define fprintf(f, ...) obo_fs_printf(__VA_ARGS__)
+#define fflush(x) ((void)0)
+static int obo_fs_printf(const char* fmt, ...) {
+    /* Ultra-minimal: just print the format string literally.
+       The runtime mostly uses printf("%s\n", text) and printf("%lld", n).
+       We handle those patterns in obo_print / obo_print_i64 directly. */
+    obo_fs_print_str(fmt);
+    return 0;
+}
+/* snprintf: only the runtime's simple patterns */
+static int snprintf(char* buf, size_t sz, const char* fmt, ...) {
+    /* Stub: copy fmt literally. Real formatting handled at call sites. */
+    size_t i;
+    for (i = 0; i < sz - 1 && fmt[i]; i++) buf[i] = fmt[i];
+    buf[i] = 0;
+    return (int)i;
+}
+
+/* Stub out pthreads */
+typedef int pthread_t;
+typedef int pthread_mutex_t;
+typedef int pthread_cond_t;
+#define PTHREAD_MUTEX_INITIALIZER 0
+#define PTHREAD_COND_INITIALIZER 0
+static int pthread_mutex_lock(pthread_mutex_t* m) { (void)m; return 0; }
+static int pthread_mutex_unlock(pthread_mutex_t* m) { (void)m; return 0; }
+static int pthread_cond_signal(pthread_cond_t* c) { (void)c; return 0; }
+static int pthread_cond_wait(pthread_cond_t* c, pthread_mutex_t* m) { (void)c; (void)m; return 0; }
+static int pthread_create(pthread_t* t, const void* a, void*(*f)(void*), void* arg) { (void)t; (void)a; (void)f; (void)arg; return -1; }
+static int pthread_join(pthread_t t, void** r) { (void)t; (void)r; return -1; }
+
+/* Stub out setjmp/longjmp (error handling degrades to trap) */
+typedef int jmp_buf[1];
+#define setjmp(j) 0
+static void longjmp(jmp_buf j, int v) { (void)j; (void)v; while(1); /* trap */ }
+
+/* Stub out time */
+struct timeval { long tv_sec; long tv_usec; };
+static int gettimeofday(struct timeval* tv, void* tz) { (void)tz; if (tv) { tv->tv_sec = 0; tv->tv_usec = 0; } return 0; }
+
+/* Stub math.h functions */
+static double fmod(double a, double b) { return a - (double)((int64_t)(a / b)) * b; }
+static double pow(double b, double e) {
+    if (e == 0.0) return 1.0;
+    double r = 1.0; int neg = 0;
+    if (e < 0) { neg = 1; e = -e; }
+    for (int i = 0; i < (int)e; i++) r *= b;
+    return neg ? 1.0 / r : r;
+}
+static double sqrt(double x) {
+    if (x <= 0.0) return 0.0;
+    double g = x / 2.0;
+    for (int i = 0; i < 20; i++) g = (g + x / g) / 2.0;
+    return g;
+}
+static double floor(double x) { return (double)((int64_t)x - (x < (double)(int64_t)x ? 1 : 0)); }
+static double ceil(double x) { double f = floor(x); return (f == x) ? f : f + 1.0; }
+static double fabs(double x) { return x < 0.0 ? -x : x; }
+static double round(double x) { return floor(x + 0.5); }
+static double log(double x) { (void)x; return 0.0; } /* stub */
+static double log2(double x) { (void)x; return 0.0; }
+static double sin(double x) { (void)x; return 0.0; }
+static double cos(double x) { (void)x; return 0.0; }
+static double tan(double x) { (void)x; return 0.0; }
+
+/* exit/abort → trap */
+static void exit(int code) { (void)code; while(1); }
+static void abort(void) { while(1); }
+
+#else /* !OBO_FREESTANDING — hosted (Tier 1) runtime */
+
 #include <math.h>
 #include <pthread.h>
 #include <setjmp.h>
@@ -8,6 +165,8 @@
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
+
+#endif /* OBO_FREESTANDING */
 
 void obo_list_print(void* p);
 void obo_map_print(void* mp);
@@ -174,10 +333,16 @@ int64_t obo_str_truthy(const char* s) {
 }
 
 void obo_print_bool(int64_t v) {
+#ifdef OBO_FREESTANDING
+    obo_fs_print_str(v ? "true" : "false");
+    obo_platform_putchar('\n');
+#else
     printf("%s\n", v ? "true" : "false");
+#endif
 }
 
 /* Print message (no newline), read a line from stdin, return trimmed string. */
+#ifndef OBO_FREESTANDING
 char* obo_prompt(const char* message) {
     if (message) {
         printf("%s", message);
@@ -196,6 +361,14 @@ char* obo_prompt(const char* message) {
     }
     return strdup(buf);
 }
+#else
+char* obo_prompt(const char* message) {
+    (void)message;
+    char* empty = malloc(1);
+    empty[0] = '\0';
+    return empty;
+}
+#endif
 
 /* Indirect i64(...i64) calls: fn is a native code pointer (intptr_t), argv length == argc. */
 int64_t obo_call_indirect_i64(void* fn, int64_t argc, int64_t* argv) {
@@ -581,6 +754,29 @@ void* obo_mixed_list_get(void* lp, int64_t idx) {
     return &l->items[idx];  /* direct pointer — no clone, no alloc */
 }
 
+/* Runtime-dispatched index: checks obj type tag to choose list vs map path.
+   Used in closures where static type info is lost (all captures are i64). */
+void* obo_map_get_boxed(void* mp, const char* key);  /* forward decl */
+void* obo_dyn_index(void* boxed, int64_t key) {
+    if (!boxed) return &__obo_zero_boxed;
+    OboValue* v = (OboValue*)boxed;
+    if (v->tag == OBO_V_MAP) {
+        return obo_map_get_boxed(v->u.ptr, (const char*)(uintptr_t)key);
+    } else if (v->tag == OBO_V_LIST) {
+        return obo_mixed_list_get(v->u.ptr, key);
+    }
+    return &__obo_zero_boxed;
+}
+
+void* obo_dyn_index_str(void* boxed, const char* key) {
+    if (!boxed) return &__obo_zero_boxed;
+    OboValue* v = (OboValue*)boxed;
+    if (v->tag == OBO_V_MAP) {
+        return obo_map_get_boxed(v->u.ptr, key);
+    }
+    return &__obo_zero_boxed;
+}
+
 int64_t obo_mixed_list_len(void* lp) {
     OboMixedList* l = (OboMixedList*)lp;
     return l ? l->len : 0;
@@ -817,6 +1013,34 @@ int64_t obo_mixed_list_all(void* lp, void* cp) {
         if (!fn(cp, obo_value_to_closure_arg(&list->items[i]))) return 0;
     }
     return 1;
+}
+
+/* sortBy with closure comparator for mixed lists */
+static void* __ml_sort_by_closure_ptr;
+static int cmp_obovalue_by_closure(const void* a, const void* b) {
+    typedef int64_t (*cmp_fn)(void*, int64_t, int64_t);
+    cmp_fn fn = (cmp_fn)(((void**)__ml_sort_by_closure_ptr)[0]);
+    int64_t va = obo_value_to_closure_arg((const OboValue*)a);
+    int64_t vb = obo_value_to_closure_arg((const OboValue*)b);
+    int64_t result = fn(__ml_sort_by_closure_ptr, va, vb);
+    return (result > 0) - (result < 0);
+}
+
+void* obo_mixed_list_sort_by(void* lp, void* cp) {
+    OboMixedList* list = (OboMixedList*)lp;
+    if (!list || list->len <= 1) return lp;
+    int64_t n = list->len;
+    OboMixedList* result = (OboMixedList*)obo_mixed_list_new(n);
+    memcpy(result->items, list->items, (size_t)n * sizeof(OboValue));
+    result->len = n;
+    __ml_sort_by_closure_ptr = cp;
+    extern void obo_gc_pause(void);
+    extern void obo_gc_resume(void);
+    obo_gc_pause();
+    qsort(result->items, (size_t)n, sizeof(OboValue), cmp_obovalue_by_closure);
+    obo_gc_resume();
+    __ml_sort_by_closure_ptr = NULL;
+    return result;
 }
 
 /* --- List (i64 elements; opaque pointer) --- */
@@ -1529,6 +1753,7 @@ int64_t __sys_Math_randomInt(int64_t lo, int64_t hi) {
 double __sys_Math_lerp(double a, double b, double t) { return a + (b - a) * t; }
 
 /* Time */
+#ifndef OBO_FREESTANDING
 int64_t __sys_Time_now(void) {
     struct timeval tv;
     if (gettimeofday(&tv, NULL) != 0) {
@@ -1575,8 +1800,17 @@ double __sys_Time_measure(void) {
     gettimeofday(&tv, NULL);
     return (double)tv.tv_sec * 1000.0 + (double)tv.tv_usec / 1000.0;
 }
+#else /* OBO_FREESTANDING stubs */
+int64_t __sys_Time_now(void)        { return 0; }
+int64_t __sys_Time_nowSeconds(void) { return 0; }
+int64_t __sys_Time_sleep(int64_t ms){ (void)ms; return 0; }
+int64_t __sys_Time_startTimer(void) { return 0; }
+int64_t __sys_Time_stopTimer(void)  { return 0; }
+double  __sys_Time_measure(void)    { return 0.0; }
+#endif /* !OBO_FREESTANDING */
 
 /* File (minimal) */
+#ifndef OBO_FREESTANDING
 char* __sys_File_read(char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) {
@@ -1635,6 +1869,14 @@ int64_t __sys_File_delete(char* path) {
 char* __sys_File_readLines(char* path) {
     return __sys_File_read(path);
 }
+#else /* OBO_FREESTANDING stubs */
+char*   __sys_File_read(char* path)       { (void)path; return obo_gc_track_string(malloc(1)); }
+int64_t __sys_File_exists(char* path)     { (void)path; return 0; }
+int64_t __sys_File_write(char* p, char* c){ (void)p; (void)c; return 0; }
+int64_t __sys_File_append(char* p, char* c){ (void)p; (void)c; return 0; }
+int64_t __sys_File_delete(char* path)     { (void)path; return 0; }
+char*   __sys_File_readLines(char* path)  { (void)path; return obo_gc_track_string(malloc(1)); }
+#endif /* !OBO_FREESTANDING */
 
 /* Convert */
 int64_t __sys_Convert_toNumber(char* s) {
@@ -1899,6 +2141,28 @@ void* obo_list_sort(void* p) {
     if (!N) return NULL;
     memcpy(N->items, L->items, (size_t)n * sizeof(int64_t));
     qsort(N->items, (size_t)n, sizeof(int64_t), cmp_i64);
+    return N;
+}
+
+/* sortBy with closure comparator for i64 lists */
+static void* __sort_by_closure_ptr;
+static int cmp_i64_by_closure(const void* a, const void* b) {
+    typedef int64_t (*cmp_fn)(void*, int64_t, int64_t);
+    cmp_fn fn = (cmp_fn)(((void**)__sort_by_closure_ptr)[0]);
+    int64_t result = fn(__sort_by_closure_ptr, *(const int64_t*)a, *(const int64_t*)b);
+    return (result > 0) - (result < 0);
+}
+
+void* obo_list_sort_by(void* p, void* cp) {
+    OboList* L = (OboList*)p;
+    if (!L || L->len <= 1) return p;
+    int64_t n = L->len;
+    OboList* N = obo_alloc_list(n);
+    if (!N) return NULL;
+    memcpy(N->items, L->items, (size_t)n * sizeof(int64_t));
+    __sort_by_closure_ptr = cp;
+    qsort(N->items, (size_t)n, sizeof(int64_t), cmp_i64_by_closure);
+    __sort_by_closure_ptr = NULL;
     return N;
 }
 
@@ -2305,6 +2569,15 @@ void obo_gc_push_root(void** slot) {
     if (__obo_gc_root_top < OBO_GC_ROOT_STACK_SIZE) {
         __obo_gc_roots[__obo_gc_root_top++] = slot;
     }
+}
+
+void obo_gc_push_roots_bulk(void*** slots, int64_t n) {
+    int64_t space = OBO_GC_ROOT_STACK_SIZE - __obo_gc_root_top;
+    if (n > space) n = space;
+    for (int64_t i = 0; i < n; i++) {
+        __obo_gc_roots[__obo_gc_root_top + i] = slots[i];
+    }
+    __obo_gc_root_top += n;
 }
 
 void obo_gc_pop_roots(int64_t n) {
@@ -2739,10 +3012,20 @@ char* obo_format_entity_string(void* entity_ptr) {
 
 static void obo_print_owned_line(char* text) {
     if (!text) {
+#ifdef OBO_FREESTANDING
+        obo_platform_putchar('?');
+        obo_platform_putchar('\n');
+#else
         printf("?\n");
+#endif
         return;
     }
+#ifdef OBO_FREESTANDING
+    obo_fs_print_str(text);
+    obo_platform_putchar('\n');
+#else
     printf("%s\n", text);
+#endif
     free(text);
 }
 
@@ -2939,6 +3222,8 @@ void obo_gc_resume(void) { __obo_gc_paused = 0; }
 
 static void obo_gc_register_impl(void* ptr, int kind) {
     if (!ptr) return;
+    /* In no-gc mode (paused), skip registration entirely — allocations freed at exit. */
+    if (__obo_gc_paused) return;
     GCNode* n = gc_node_alloc();
     if (!n) return;
     n->ptr = ptr;
@@ -3617,3 +3902,382 @@ void* obo_reflect(void* obj) {
     }
     return result;
 }
+
+/* ── TextBuilder ─────────────────────────────────────── */
+typedef struct {
+    char*   data;
+    int64_t len;
+    int64_t cap;
+} OboTextBuilder;
+
+void* obo_textbuilder_new(int64_t cap) {
+    OboTextBuilder* tb = (OboTextBuilder*)malloc(sizeof(OboTextBuilder));
+    if (!tb) return NULL;
+    if (cap < 16) cap = 16;
+    tb->data = (char*)malloc(cap);
+    tb->len = 0;
+    tb->cap = cap;
+    tb->data[0] = '\0';
+    return tb;
+}
+
+static void tb_ensure(OboTextBuilder* tb, int64_t extra) {
+    int64_t need = tb->len + extra + 1;
+    if (need <= tb->cap) return;
+    int64_t newcap = tb->cap * 2;
+    if (newcap < need) newcap = need;
+    tb->data = (char*)realloc(tb->data, newcap);
+    tb->cap = newcap;
+}
+
+void* obo_textbuilder_append(void* tbp, const char* s) {
+    OboTextBuilder* tb = (OboTextBuilder*)tbp;
+    if (!tb || !s) return tbp;
+    int64_t slen = (int64_t)strlen(s);
+    tb_ensure(tb, slen);
+    memcpy(tb->data + tb->len, s, slen);
+    tb->len += slen;
+    tb->data[tb->len] = '\0';
+    return tbp;
+}
+
+void* obo_textbuilder_appendChar(void* tbp, int64_t ch) {
+    OboTextBuilder* tb = (OboTextBuilder*)tbp;
+    if (!tb) return tbp;
+    /* UTF-8 encode */
+    char buf[4];
+    int blen = 0;
+    uint32_t c = (uint32_t)ch;
+    if (c < 0x80) {
+        buf[0] = (char)c; blen = 1;
+    } else if (c < 0x800) {
+        buf[0] = (char)(0xC0 | (c >> 6));
+        buf[1] = (char)(0x80 | (c & 0x3F));
+        blen = 2;
+    } else if (c < 0x10000) {
+        buf[0] = (char)(0xE0 | (c >> 12));
+        buf[1] = (char)(0x80 | ((c >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (c & 0x3F));
+        blen = 3;
+    } else {
+        buf[0] = (char)(0xF0 | (c >> 18));
+        buf[1] = (char)(0x80 | ((c >> 12) & 0x3F));
+        buf[2] = (char)(0x80 | ((c >> 6) & 0x3F));
+        buf[3] = (char)(0x80 | (c & 0x3F));
+        blen = 4;
+    }
+    tb_ensure(tb, blen);
+    memcpy(tb->data + tb->len, buf, blen);
+    tb->len += blen;
+    tb->data[tb->len] = '\0';
+    return tbp;
+}
+
+void* obo_textbuilder_appendInt(void* tbp, int64_t n) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%lld", (long long)n);
+    return obo_textbuilder_append(tbp, buf);
+}
+
+char* obo_textbuilder_build(void* tbp) {
+    OboTextBuilder* tb = (OboTextBuilder*)tbp;
+    if (!tb) return obo_str_concat("", "");
+    char* out = (char*)malloc(tb->len + 1);
+    memcpy(out, tb->data, tb->len + 1);
+    obo_gc_register_impl(out, OBO_GC_STRING);
+    return out;
+}
+
+int64_t obo_textbuilder_length(void* tbp) {
+    OboTextBuilder* tb = (OboTextBuilder*)tbp;
+    return tb ? tb->len : 0;
+}
+
+void* obo_textbuilder_clear(void* tbp) {
+    OboTextBuilder* tb = (OboTextBuilder*)tbp;
+    if (tb) {
+        tb->len = 0;
+        tb->data[0] = '\0';
+    }
+    return tbp;
+}
+
+char* obo_textbuilder_toString(void* tbp) {
+    return obo_textbuilder_build(tbp);
+}
+
+/* ── Integer-keyed map helpers ───────────────────────── */
+static uint32_t map_hash_int(int64_t key) {
+    /* murmur-style finalizer for integer hashing */
+    uint64_t k = (uint64_t)key;
+    k ^= k >> 33;
+    k *= 0xff51afd7ed558ccdULL;
+    k ^= k >> 33;
+    k *= 0xc4ceb9fe1a85ec53ULL;
+    k ^= k >> 33;
+    return (uint32_t)k;
+}
+
+/* Internal: convert integer to a canonical string key for reuse with existing map infra */
+static const char* ikey_to_str(int64_t key) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x01%lld", (long long)key);
+    return obo_intern(buf);
+}
+
+void* obo_map_set_int(void* mp, int64_t key, int64_t val) {
+    const char* skey = ikey_to_str(key);
+    obo_map_put_i64(mp, skey, val);
+    return mp;
+}
+
+void* obo_map_set_int_str(void* mp, int64_t key, const char* val) {
+    const char* skey = ikey_to_str(key);
+    obo_map_put_str(mp, skey, val);
+    return mp;
+}
+
+void* obo_map_set_int_boxed(void* mp, int64_t key, void* val) {
+    const char* skey = ikey_to_str(key);
+    obo_map_put_boxed(mp, skey, val);
+    return mp;
+}
+
+int64_t obo_map_get_int(void* mp, int64_t key) {
+    const char* skey = ikey_to_str(key);
+    OboMap* m = (OboMap*)mp;
+    if (!m) return 0;
+    uint32_t h = map_bucket(m, skey);
+    MapEntry* e = m->buckets[h];
+    while (e) {
+        if (e->key == skey || strcmp(e->key, skey) == 0) {
+            if (e->val.tag == OBO_V_I64) return e->val.u.i64;
+            return 0;
+        }
+        e = e->next;
+    }
+    return 0;
+}
+
+void* obo_map_get_int_boxed(void* mp, int64_t key) {
+    const char* skey = ikey_to_str(key);
+    OboMap* m = (OboMap*)mp;
+    if (!m) return NULL;
+    uint32_t h = map_bucket(m, skey);
+    MapEntry* e = m->buckets[h];
+    while (e) {
+        if (e->key == skey || strcmp(e->key, skey) == 0) {
+            OboValue* boxed = (OboValue*)malloc(sizeof(OboValue));
+            *boxed = e->val;
+            return boxed;
+        }
+        e = e->next;
+    }
+    return NULL;
+}
+
+int64_t obo_map_has_int(void* mp, int64_t key) {
+    const char* skey = ikey_to_str(key);
+    return obo_map_has(mp, skey);
+}
+
+void* obo_map_remove_int(void* mp, int64_t key) {
+    const char* skey = ikey_to_str(key);
+    return obo_map_remove(mp, skey);
+}
+
+/* ─── Arena Allocator ─────────────────────────────────────────── */
+
+typedef struct {
+    char*   data;
+    int64_t len;
+    int64_t cap;
+} OboArena;
+
+void* obo_arena_create(int64_t cap) {
+    OboArena* a = (OboArena*)malloc(sizeof(OboArena));
+    if (!a) return NULL;
+    if (cap < 64) cap = 64;
+    a->data = (char*)malloc(cap);
+    a->len = 0;
+    a->cap = cap;
+    return a;
+}
+
+/* Bump-allocate `size` bytes, returns pointer as i64 (offset into arena). */
+int64_t obo_arena_alloc(void* ap, int64_t size) {
+    OboArena* a = (OboArena*)ap;
+    if (!a || size <= 0) return 0;
+    /* Align to 8 bytes */
+    int64_t aligned = (a->len + 7) & ~7;
+    int64_t needed = aligned + size;
+    if (needed > a->cap) {
+        /* Grow: double or fit */
+        int64_t new_cap = a->cap * 2;
+        if (new_cap < needed) new_cap = needed;
+        char* new_data = (char*)realloc(a->data, new_cap);
+        if (!new_data) return 0;
+        a->data = new_data;
+        a->cap = new_cap;
+    }
+    a->len = needed;
+    return (int64_t)(a->data + aligned);
+}
+
+int64_t obo_arena_reset(void* ap) {
+    OboArena* a = (OboArena*)ap;
+    if (a) a->len = 0;
+    return 0;
+}
+
+int64_t obo_arena_destroy(void* ap) {
+    OboArena* a = (OboArena*)ap;
+    if (a) {
+        free(a->data);
+        free(a);
+    }
+    return 0;
+}
+
+int64_t obo_arena_used(void* ap) {
+    OboArena* a = (OboArena*)ap;
+    return a ? a->len : 0;
+}
+
+int64_t obo_arena_capacity(void* ap) {
+    OboArena* a = (OboArena*)ap;
+    return a ? a->cap : 0;
+}
+
+/* Write a value at a pointer address (returned by obo_arena_alloc). */
+int64_t obo_arena_write_i64(int64_t ptr, int64_t val) {
+    if (ptr) *((int64_t*)ptr) = val;
+    return 0;
+}
+
+int64_t obo_arena_write_f64(int64_t ptr, double val) {
+    if (ptr) *((double*)ptr) = val;
+    return 0;
+}
+
+int64_t obo_arena_read_i64(int64_t ptr) {
+    return ptr ? *((int64_t*)ptr) : 0;
+}
+
+double obo_arena_read_f64(int64_t ptr) {
+    return ptr ? *((double*)ptr) : 0.0;
+}
+
+/* ================================================================
+   Shadow call stack — runtime stack traces for OBO debug builds.
+   ================================================================ */
+#include <signal.h>
+#include <unistd.h>
+
+#define OBO_SHADOW_STACK_MAX 256
+
+typedef struct {
+    const char* fn_name;
+    int32_t     line;
+} OboFrame;
+
+static OboFrame obo_shadow_stack[OBO_SHADOW_STACK_MAX];
+static int32_t  obo_shadow_depth = 0;
+
+void obo_frame_push(const char* fn_name, int32_t line) {
+    if (obo_shadow_depth < OBO_SHADOW_STACK_MAX) {
+        obo_shadow_stack[obo_shadow_depth].fn_name = fn_name;
+        obo_shadow_stack[obo_shadow_depth].line    = line;
+    }
+    obo_shadow_depth++;
+}
+
+void obo_frame_pop(void) {
+    if (obo_shadow_depth > 0) obo_shadow_depth--;
+}
+
+void obo_print_stack_trace(void) {
+    int depth = obo_shadow_depth < OBO_SHADOW_STACK_MAX ? obo_shadow_depth : OBO_SHADOW_STACK_MAX;
+    if (depth == 0) {
+        fprintf(stderr, "  (no stack trace available — build with --debug)\n");
+        return;
+    }
+    for (int i = depth - 1; i >= 0; i--) {
+        fprintf(stderr, "  [%d] %s (line %d)\n",
+                depth - 1 - i,
+                obo_shadow_stack[i].fn_name ? obo_shadow_stack[i].fn_name : "???",
+                obo_shadow_stack[i].line);
+    }
+}
+
+static void obo_signal_handler(int sig) {
+    const char* name = "Unknown signal";
+    if (sig == SIGSEGV) name = "Segmentation fault (SIGSEGV)";
+    else if (sig == SIGABRT) name = "Aborted (SIGABRT)";
+    else if (sig == SIGBUS)  name = "Bus error (SIGBUS)";
+    else if (sig == SIGFPE)  name = "Floating point exception (SIGFPE)";
+    fprintf(stderr, "\nObo runtime error: %s\nStack trace:\n", name);
+    obo_print_stack_trace();
+    _exit(128 + sig);
+}
+
+void obo_install_signal_handlers(void) {
+    signal(SIGSEGV, obo_signal_handler);
+    signal(SIGABRT, obo_signal_handler);
+    signal(SIGBUS,  obo_signal_handler);
+    signal(SIGFPE,  obo_signal_handler);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Event Loop — simple poll-based loop for UI / real-time apps.
+   Calls user-provided function pointers each frame.
+   ═══════════════════════════════════════════════════════════ */
+
+typedef void (*obo_frame_callback_t)(void* ctx);
+typedef void (*obo_event_callback_t)(void* ctx, int64_t event_type, int64_t event_data);
+
+static volatile int __obo_event_loop_running = 0;
+
+void obo_event_loop_stop(void) {
+    __obo_event_loop_running = 0;
+}
+
+/* Run a simple frame-based event loop.
+   on_frame: called every iteration (may be NULL)
+   on_event: called for events (reserved for platform integration, may be NULL)
+   ctx:      opaque pointer passed to callbacks (typically NULL or user data)
+   target_fps: target frames per second (0 = no throttle, run as fast as possible)
+*/
+void obo_event_loop_run(obo_frame_callback_t on_frame,
+                        obo_event_callback_t on_event,
+                        void* ctx,
+                        int64_t target_fps) {
+    __obo_event_loop_running = 1;
+    int64_t frame_us = target_fps > 0 ? 1000000 / target_fps : 0;
+    (void)on_event; /* reserved for platform events — not dispatched yet */
+
+    while (__obo_event_loop_running) {
+        struct timeval start;
+        gettimeofday(&start, NULL);
+
+        if (on_frame) {
+            on_frame(ctx);
+        }
+
+        if (frame_us > 0) {
+            struct timeval end;
+            gettimeofday(&end, NULL);
+            int64_t elapsed = (end.tv_sec - start.tv_sec) * 1000000
+                            + (end.tv_usec - start.tv_usec);
+            int64_t remaining = frame_us - elapsed;
+            if (remaining > 0) {
+                struct timespec ts;
+                ts.tv_sec = remaining / 1000000;
+                ts.tv_nsec = (remaining % 1000000) * 1000;
+                nanosleep(&ts, NULL);
+            }
+        }
+    }
+}
+
+/* --- generated native method dispatch is appended by `obo build` --- */

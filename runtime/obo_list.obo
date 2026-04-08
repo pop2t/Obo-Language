@@ -1,0 +1,237 @@
+// OBO Self-Hosted Runtime — List (i64 elements) (Tier 0)
+//
+// Layout: [len:i64, cap:i64, items:i64[cap]]
+//   offset 0: len (number of elements)
+//   offset 8: cap (capacity)
+//   offset 16+: items (i64 array)
+//
+// All functions take and return raw pointers (i64).
+
+// ── Internal: allocate a list with given capacity ──
+@export("i64")
+function rt_list_alloc(cap as number)
+{
+    if (cap < 0) { out 0; }
+    // 16 bytes header + 8 bytes per element
+    buf = pointer.alloc(16 + cap * 8);
+    if (buf == 0) { out 0; }
+    mem.store64(buf, 0);
+    mem.store64(buf + 8, cap);
+    out buf;
+}
+
+// ── Create a new list with given length, zero-initialized ──
+@export("i64")
+function rt_list_new(len as number)
+{
+    if (len < 0) { out 0; }
+    buf = pointer.alloc(16 + len * 8);
+    if (buf == 0) { out 0; }
+    mem.store64(buf, len);
+    mem.store64(buf + 8, len);
+    if (len > 0) { mem.zero(buf + 16, len * 8); }
+    out buf;
+}
+
+// ── Length ──
+@export("i64")
+function rt_list_len(lst as number)
+{
+    if (lst == 0) { out 0; }
+    out mem.load64(lst);
+}
+
+// ── Get element at index ──
+@export("i64")
+function rt_list_get(lst as number, idx as number)
+{
+    if (lst == 0) { out 0; }
+    len = mem.load64(lst);
+    if (idx < 0) { out 0; }
+    if (idx >= len) { out 0; }
+    out mem.load64(lst + 16 + idx * 8);
+}
+
+// ── Set element at index ──
+@export("void")
+function rt_list_set(lst as number, idx as number, val as number)
+{
+    if (lst == 0) { out 0; }
+    len = mem.load64(lst);
+    if (idx < 0) { out 0; }
+    if (idx >= len) { out 0; }
+    mem.store64(lst + 16 + idx * 8, val);
+}
+
+// ── Append element (returns new or resized list) ──
+@export("i64")
+function rt_list_add(lst as number, val as number)
+{
+    len = 0;
+    cap = 0;
+    if (lst != 0)
+    {
+        len = mem.load64(lst);
+        cap = mem.load64(lst + 8);
+    }
+
+    if (len < cap)
+    {
+        // Room to grow in-place
+        mem.store64(lst + 16 + len * 8, val);
+        mem.store64(lst, len + 1);
+        out lst;
+    }
+
+    // Need to reallocate
+    new_cap = cap * 2;
+    if (new_cap < 8) { new_cap = 8; }
+    new_buf = pointer.alloc(16 + new_cap * 8);
+    if (new_buf == 0) { out 0; }
+    mem.store64(new_buf, len + 1);
+    mem.store64(new_buf + 8, new_cap);
+
+    // Copy old data
+    if (len > 0)
+    {
+        mem.copy(new_buf + 16, lst + 16, len * 8);
+    }
+    // Append new value
+    mem.store64(new_buf + 16 + len * 8, val);
+
+    // Free old list
+    if (lst != 0) { pointer.free(lst); }
+    out new_buf;
+}
+
+// ── First element ──
+@export("i64")
+function rt_list_first(lst as number)
+{
+    if (lst == 0) { out 0; }
+    len = mem.load64(lst);
+    if (len == 0) { out 0; }
+    out mem.load64(lst + 16);
+}
+
+// ── Last element ──
+@export("i64")
+function rt_list_last(lst as number)
+{
+    if (lst == 0) { out 0; }
+    len = mem.load64(lst);
+    if (len == 0) { out 0; }
+    out mem.load64(lst + 16 + (len - 1) * 8);
+}
+
+// ── Is empty? ──
+@export("i64")
+function rt_list_empty(lst as number)
+{
+    if (lst == 0) { out 1; }
+    len = mem.load64(lst);
+    if (len == 0) { out 1; }
+    out 0;
+}
+
+// ── Contains value? ──
+@export("i64")
+function rt_list_contains(lst as number, val as number)
+{
+    if (lst == 0) { out 0; }
+    len = mem.load64(lst);
+    i = 0;
+    forever
+    {
+        if (i >= len) { out 0; }
+        elem = mem.load64(lst + 16 + i * 8);
+        if (elem == val) { out 1; }
+        i = i + 1;
+    }
+}
+
+// ── Index of value (-1 if not found) ──
+@export("i64")
+function rt_list_indexOf(lst as number, val as number)
+{
+    if (lst == 0) { out 0 - 1; }
+    len = mem.load64(lst);
+    i = 0;
+    forever
+    {
+        if (i >= len) { out 0 - 1; }
+        elem = mem.load64(lst + 16 + i * 8);
+        if (elem == val) { out i; }
+        i = i + 1;
+    }
+}
+
+// ── Sort (insertion sort, returns new list) ──
+@export("i64")
+function rt_list_sort(lst as number)
+{
+    if (lst == 0) { out 0; }
+    len = mem.load64(lst);
+    if (len <= 1) { out lst; }
+
+    // Copy to new list
+    new_lst = rt_list_new(len);
+    mem.copy(new_lst + 16, lst + 16, len * 8);
+
+    // Insertion sort
+    i = 1;
+    forever
+    {
+        if (i >= len) { stop; }
+        key = mem.load64(new_lst + 16 + i * 8);
+        j = i - 1;
+        forever
+        {
+            if (j < 0) { stop; }
+            elem = mem.load64(new_lst + 16 + j * 8);
+            if (elem <= key) { stop; }
+            mem.store64(new_lst + 16 + (j + 1) * 8, elem);
+            j = j - 1;
+        }
+        mem.store64(new_lst + 16 + (j + 1) * 8, key);
+        i = i + 1;
+    }
+    out new_lst;
+}
+
+// ── Reversed (returns new list) ──
+@export("i64")
+function rt_list_reversed(lst as number)
+{
+    if (lst == 0) { out 0; }
+    len = mem.load64(lst);
+    new_lst = rt_list_new(len);
+    i = 0;
+    forever
+    {
+        if (i >= len) { stop; }
+        val = mem.load64(lst + 16 + (len - 1 - i) * 8);
+        mem.store64(new_lst + 16 + i * 8, val);
+        i = i + 1;
+    }
+    out new_lst;
+}
+
+// ── Slice (returns new list of [start..end)) ──
+@export("i64")
+function rt_list_slice(lst as number, start as number, end_idx as number)
+{
+    if (lst == 0) { out 0; }
+    len = mem.load64(lst);
+
+    lo = start;
+    hi = end_idx;
+    if (lo < 0) { lo = 0; }
+    if (hi > len) { hi = len; }
+    if (lo >= hi) { out rt_list_new(0); }
+
+    n = hi - lo;
+    new_lst = rt_list_new(n);
+    mem.copy(new_lst + 16, lst + 16 + lo * 8, n * 8);
+    out new_lst;
+}

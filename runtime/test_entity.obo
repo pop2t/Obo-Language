@@ -1,0 +1,99 @@
+// Test obo_entity.obo — self-hosted entity operations
+
+use obo_string;
+use obo_map;
+use obo_entity;
+
+@export("i64")
+function make_str_lit(c1 as number, c2 as number, c3 as number)
+{
+    buf = pointer.alloc(4);
+    mem.store8(buf, c1);
+    mem.store8(buf + 1, c2);
+    mem.store8(buf + 2, c3);
+    mem.store8(buf + 3, 0);
+    out buf;
+}
+
+function main()
+{
+    // Keys
+    fname = make_str_lit(120, 0, 0);    // "x"
+    fname2 = make_str_lit(121, 0, 0);   // "y"
+    tname = make_str_lit(80, 116, 0);   // "Pt"
+
+    // ── Test 1: Map-based entity ──
+    e = rt_entity_new(tname);
+    show e != 0;
+    show rt_entity_is_slotted(e) == 0;
+
+    // ── Test 2: Put and get fields ──
+    rt_entity_put_i64(e, fname, 10);
+    rt_entity_put_i64(e, fname2, 20);
+    show rt_entity_get_i64(e, fname) == 10;
+    show rt_entity_get_i64(e, fname2) == 20;
+    show rt_entity_has(e, fname) == 1;
+    show rt_entity_field_count(e) == 2;
+
+    // ── Test 3: Update field ──
+    rt_entity_put_i64(e, fname, 99);
+    show rt_entity_get_i64(e, fname) == 99;
+    show rt_entity_field_count(e) == 2;
+
+    // ── Test 4: Get returns value pointer ──
+    vptr = rt_entity_get(e, fname);
+    show vptr != 0;
+    show mem.load64(vptr) == 0;      // tag = I64
+    show mem.load64(vptr + 8) == 99; // payload
+
+    // ── Test 5: Type name ──
+    tn = rt_entity_type_name(e);
+    show rt_strcmp(tn, tname) == 0;
+
+    // ── Test 6: Slotted entity ──
+    slotted_tname = make_str_lit(86, 101, 99);  // "Vec"
+    se = rt_entity_new_slotted(slotted_tname, 3);
+    show se != 0;
+    show rt_entity_is_slotted(se) == 1;
+    show rt_entity_field_count(se) == 3;
+
+    // ── Test 7: Set/get slots ──
+    rt_entity_set_slot_i64(se, 0, 100);
+    rt_entity_set_slot_i64(se, 1, 200);
+    rt_entity_set_slot_i64(se, 2, 300);
+
+    slot0 = rt_entity_get_slot(se, 0);
+    show mem.load64(slot0) == 0;      // tag = I64
+    show mem.load64(slot0 + 8) == 100;
+
+    slot2 = rt_entity_get_slot(se, 2);
+    show mem.load64(slot2 + 8) == 300;
+
+    // ── Test 8: Set field name ──
+    rt_entity_set_field_name(se, 0, fname);
+    rt_entity_set_field_name(se, 1, fname2);
+
+    // ── Test 9: Slot types ──
+    rt_entity_set_slot_bool(se, 1, 1);
+    slot1 = rt_entity_get_slot(se, 1);
+    show mem.load64(slot1) == 6;      // tag = BOOL
+    show mem.load64(slot1 + 8) == 1;
+
+    rt_entity_set_slot_null(se, 2);
+    slot2b = rt_entity_get_slot(se, 2);
+    show mem.load64(slot2b) == 7;     // tag = NULL
+
+    // ── Test 10: Bounds check ──
+    bad = rt_entity_get_slot(se, 10);
+    show bad == 0;
+
+    // Cleanup
+    rt_entity_free(e);
+    rt_entity_free(se);
+    pointer.free(fname);
+    pointer.free(fname2);
+    pointer.free(tname);
+    pointer.free(slotted_tname);
+
+    show "All entity tests passed";
+}

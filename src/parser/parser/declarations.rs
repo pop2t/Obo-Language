@@ -11,6 +11,43 @@ impl Parser {
         let is_system = self.match_token(TokenKind::KwSystem);
         let is_static = self.match_token(TokenKind::KwStatic);
 
+        if self.peek_kind() == TokenKind::Identifier && self.peek_lexeme() == "value" {
+                // value TypeName { x as f32; y as f32; }
+                let span = self.advance().span; // consume 'value'
+                let name = self.expect_identifier()?;
+                self.expect(TokenKind::LeftBrace)?;
+                let mut fields = Vec::new();
+                while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
+                    let is_pub = self.match_token(TokenKind::KwPublic);
+                    let fspan = self.current_span();
+                    let fname = self.expect_identifier()?;
+                    let type_annotation = if self.match_token(TokenKind::KwAs) {
+                        Some(self.parse_type_expr()?)
+                    } else {
+                        None
+                    };
+                    self.expect(TokenKind::Semicolon)?;
+                    fields.push(FieldDecl {
+                        name: fname,
+                        type_annotation,
+                        default_value: None,
+                        is_public: is_pub,
+                        span: fspan,
+                    });
+                }
+                self.expect(TokenKind::RightBrace)?;
+                return Ok(Declaration::Entity(EntityDecl {
+                    name,
+                    fields,
+                    is_public: is_public,
+                    is_packed: true,
+                    is_value: true,
+                    doc_comments,
+                    attributes,
+                    span,
+                }));
+        }
+
         match self.peek_kind() {
             TokenKind::KwFunction => {
                 let mut f = self.parse_function_decl()?;
@@ -21,6 +58,17 @@ impl Parser {
                 f.attributes = attributes;
                 Ok(Declaration::Function(f))
             }
+            TokenKind::KwPacked => {
+                // packed entity Name { ... }
+                self.advance(); // consume 'packed'
+                let mut e = self.parse_entity_decl()?;
+                e.is_packed = true;
+                e.is_public = is_public;
+                e.doc_comments = doc_comments;
+                e.attributes = attributes;
+                Ok(Declaration::Entity(e))
+            }
+
             TokenKind::KwEntity => {
                 let mut e = self.parse_entity_decl()?;
                 e.is_public = is_public;
@@ -190,6 +238,8 @@ impl Parser {
             name,
             fields,
             is_public: false,
+            is_packed: false,
+            is_value: false,
             doc_comments: Vec::new(),
             attributes: Vec::new(),
             span,
@@ -697,7 +747,7 @@ impl Parser {
                         break;
                     }
                     let pspan = self.current_span();
-                    let pname = self.expect_identifier()?;
+                    let pname = self.expect_member_name()?;
                     self.expect(TokenKind::KwAs)?;
                     let ptype = self.parse_type_expr()?;
                     params.push(BridgeParam {

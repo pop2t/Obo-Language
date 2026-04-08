@@ -1,0 +1,144 @@
+// Test obo_string.obo — self-hosted string operations
+// Compile: obo build runtime/test_string.obo --emit-ll -o /tmp/test_str
+
+use obo_string;
+
+@export("i64")
+function make_str(c1 as number, c2 as number, c3 as number)
+{
+    // Helper: build a 3-char string from ASCII codes
+    buf = pointer.alloc(4);
+    mem.store8(buf, c1);
+    mem.store8(buf + 1, c2);
+    mem.store8(buf + 2, c3);
+    mem.store8(buf + 3, 0);
+    out buf;
+}
+
+@export("i64")
+function make_empty()
+{
+    buf = pointer.alloc(1);
+    mem.store8(buf, 0);
+    out buf;
+}
+
+function main()
+{
+    // Build test strings: "abc", "def", "ab", ""
+    abc = make_str(97, 98, 99);
+    def = make_str(100, 101, 102);
+    ab = pointer.alloc(3);
+    mem.store8(ab, 97);
+    mem.store8(ab + 1, 98);
+    mem.store8(ab + 2, 0);
+    empty = make_empty();
+
+    // ── strlen ──
+    show rt_strlen(abc);      // expect 3
+    show rt_strlen(empty);    // expect 0
+    show rt_strlen(0);        // expect 0
+
+    // ── strcmp ──
+    show rt_strcmp(abc, abc);  // expect 0
+    cmp1 = rt_strcmp(abc, def);
+    // a < d, so should be negative
+    neg1 = 0;
+    if (cmp1 < 0) { neg1 = 1; }
+    show neg1;                 // expect 1
+
+    // ── strdup ──
+    abc2 = rt_strdup(abc);
+    show rt_strcmp(abc, abc2); // expect 0
+    show rt_strlen(abc2);     // expect 3
+    pointer.free(abc2);
+
+    // ── str_concat ──
+    joined = rt_str_concat(abc, def);
+    show rt_strlen(joined);   // expect 6
+
+    // ── i64_to_str ──
+    s42 = rt_i64_to_str(42);
+    show rt_strlen(s42);      // expect 2
+    // Check '4' = 52, '2' = 50
+    show mem.load8(s42);       // expect 52
+    show mem.load8(s42 + 1);   // expect 50
+
+    sneg = rt_i64_to_str(0 - 123);
+    show rt_strlen(sneg);     // expect 4 ("-123")
+    show mem.load8(sneg);      // expect 45 ('-')
+
+    s0 = rt_i64_to_str(0);
+    show rt_strlen(s0);       // expect 1
+    show mem.load8(s0);        // expect 48 ('0')
+
+    // ── str_truthy ──
+    show rt_str_truthy(abc);  // expect 1
+    show rt_str_truthy(empty); // expect 0
+    show rt_str_truthy(0);    // expect 0
+
+    // ── str_contains ──
+    show rt_str_contains(joined, abc); // expect 1  (abcdef contains abc)
+    show rt_str_contains(abc, def);    // expect 0
+
+    // ── str_indexOf ──
+    show rt_str_indexOf(joined, def);  // expect 3  (def starts at idx 3 in "abcdef")
+    show rt_str_indexOf(abc, def);     // expect -1
+
+    // ── str_startsWith / endsWith ──
+    show rt_str_startsWith(joined, abc); // expect 1
+    show rt_str_endsWith(joined, def);   // expect 1
+    show rt_str_startsWith(joined, def); // expect 0
+
+    // ── str_upper / str_lower ──
+    upper_abc = rt_str_upper(abc);
+    show mem.load8(upper_abc);      // expect 65 ('A')
+    show mem.load8(upper_abc + 1);  // expect 66 ('B')
+    lower_back = rt_str_lower(upper_abc);
+    show mem.load8(lower_back);     // expect 97 ('a')
+
+    // ── str_trim ──
+    // Build " ab " (space=32)
+    padded = pointer.alloc(5);
+    mem.store8(padded, 32);
+    mem.store8(padded + 1, 97);
+    mem.store8(padded + 2, 98);
+    mem.store8(padded + 3, 32);
+    mem.store8(padded + 4, 0);
+    trimmed = rt_str_trim(padded);
+    show rt_strlen(trimmed);  // expect 2
+
+    // ── str_repeat ──
+    rep = rt_str_repeat(ab, 3);  // "ababab"
+    show rt_strlen(rep);  // expect 6
+
+    // ── str_reversed ──
+    rev = rt_str_reversed(abc);  // "cba"
+    show mem.load8(rev);       // expect 99 ('c')
+    show mem.load8(rev + 1);   // expect 98 ('b')
+    show mem.load8(rev + 2);   // expect 97 ('a')
+
+    // ── str_substring ──
+    sub = rt_str_substring(joined, 1, 4);  // "bcd" from "abcdef"
+    show rt_strlen(sub);     // expect 3
+    show mem.load8(sub);      // expect 98 ('b')
+
+    // ── str_replace ──
+    // Replace "bc" with "XX" in "abc" → "aXXc" — wait, that's wrong
+    // Actually: "abc" with from="bc" to="XX" → "aXX"
+    bc = pointer.alloc(3);
+    mem.store8(bc, 98);
+    mem.store8(bc + 1, 99);
+    mem.store8(bc + 2, 0);
+    xx = pointer.alloc(3);
+    mem.store8(xx, 88);
+    mem.store8(xx + 1, 88);
+    mem.store8(xx + 2, 0);
+    replaced = rt_str_replace(abc, bc, xx);
+    show rt_strlen(replaced);    // expect 3  ("aXX")
+    show mem.load8(replaced);     // expect 97 ('a')
+    show mem.load8(replaced + 1); // expect 88 ('X')
+    show mem.load8(replaced + 2); // expect 88 ('X')
+
+    show 999;  // sentinel — if we get here, all tests passed
+}

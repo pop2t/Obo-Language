@@ -50,6 +50,8 @@ pub struct EntityDecl {
     pub name: String,
     pub fields: Vec<FieldDecl>,
     pub is_public: bool,
+    pub is_packed: bool,
+    pub is_value: bool,
     pub doc_comments: Vec<String>,
     pub attributes: Vec<Attribute>,
     pub span: Span,
@@ -253,6 +255,7 @@ pub enum Statement {
     PossibleBlock(PossibleBlockStmt),
     SafeBlock(Vec<Statement>, Span),
     MetalBlock(Vec<Statement>, Span),
+    Defer(Vec<Statement>, Span),
     Block(Vec<Statement>),
     Assert(AssertStmt),
 }
@@ -442,6 +445,12 @@ pub enum Expr {
 
     Pipe(Box<Expr>, Box<Expr>, Span), // expr |> func  or  expr then func
 
+    Own(Box<Expr>, Span), // own expr — single-owner, auto-freed at scope exit
+
+    /// asm("template", "constraints", input1, input2, ...)
+    /// Inline assembly — metal only. Template and constraints are string literals.
+    InlineAsm(String, String, Vec<Expr>, Span),
+
     Interpolation(Vec<Expr>, Span),
 }
 
@@ -475,6 +484,8 @@ impl Expr {
             Expr::Action(_, _, s) => *s,
             Expr::ArrowAction(_, _, s) => *s,
             Expr::Pipe(_, _, s) => *s,
+            Expr::Own(_, s) => *s,
+            Expr::InlineAsm(_, _, _, s) => *s,
             Expr::Interpolation(_, s) => *s,
         }
     }
@@ -506,12 +517,18 @@ pub enum BinOp {
     Greater,
     LessEq,
     GreaterEq,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     Neg,
     Not,
+    BitNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -534,6 +551,11 @@ impl std::fmt::Display for BinOp {
             BinOp::Greater => write!(f, ">"),
             BinOp::LessEq => write!(f, "<="),
             BinOp::GreaterEq => write!(f, ">="),
+            BinOp::BitAnd => write!(f, "&"),
+            BinOp::BitOr => write!(f, "|"),
+            BinOp::BitXor => write!(f, "^"),
+            BinOp::Shl => write!(f, "<<"),
+            BinOp::Shr => write!(f, ">>"),
         }
     }
 }

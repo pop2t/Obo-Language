@@ -8,6 +8,7 @@ mod stdlib;
 mod llvm_emit;
 mod cli;
 mod runtime_c;
+mod runtime_obo;
 mod lsp;
 
 use crate::error::ErrorReporter;
@@ -24,7 +25,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
-const VERSION: &str = "0.5.0";
+const VERSION: &str = "0.6.0";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -320,7 +321,17 @@ fn cmd_build(cfg: &cli::BuildArgs) {
     let lowering = Lowering::new();
     let mut ir_program = lowering.lower(&program);
 
-    let (llvm_ir, fn_ret) = match llvm_emit::emit_program(&mut ir_program) {
+    // Set source file info for debug metadata.
+    {
+        let p = std::path::Path::new(path);
+        ir_program.source_file = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        ir_program.source_dir = p.parent().and_then(|d| d.canonicalize().ok()).map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".to_string());
+    }
+
+    // Freestanding implies no-gc (no GC roots / sweep in Tier 0).
+    let effective_no_gc = cfg.no_gc || cfg.freestanding;
+
+    let (llvm_ir, fn_ret) = match llvm_emit::emit_program(&mut ir_program, cfg.debug, effective_no_gc) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Obo: Native build failed — {} 🧱", e);
@@ -328,7 +339,20 @@ fn cmd_build(cfg: &cli::BuildArgs) {
         }
     };
     let dispatch_c = llvm_emit::generate_obo_native_dispatch_c(&ir_program, &fn_ret);
-    let rt_c_src = format!("{}{}", runtime_c::OBO_RT_C, dispatch_c);
+
+    // Branch on runtime backend: C (default) vs OBO self-hosted.
+    let (rt_c_src, runtime_ll_extra) = if cfg.runtime.as_deref() == Some("obo") {
+        match compile_obo_runtime(&dispatch_c) {
+            Ok((rt_ll, bridge_c)) => (bridge_c, Some(rt_ll)),
+            Err(e) => {
+                eprintln!("Obo: OBO runtime compilation failed — {} 🧱", e);
+                process::exit(1);
+            }
+        }
+    } else {
+        let freestanding_define = if cfg.freestanding { "#define OBO_FREESTANDING\n" } else { "" };
+        (format!("{}{}{}", freestanding_define, runtime_c::OBO_RT_C, dispatch_c), None)
+    };
 
     // Collect unique bridge library names for linker flags.
     let bridge_libs: Vec<String> = {
@@ -400,18 +424,64 @@ fn cmd_build(cfg: &cli::BuildArgs) {
         }
     };
 
-    let status = Command::new("clang")
-        .arg("-O2")
-        .arg("-Wno-override-module")
-        .arg("-lpthread")
+    let mut clang = Command::new("clang");
+    if cfg.debug {
+        clang.arg("-g").arg("-O0");
+    } else {
+        clang.arg("-O2");
+    }
+
+    // Bare-metal / cross-compilation flags.
+    if cfg.freestanding || cfg.no_stdlib {
+        clang.arg("-ffreestanding").arg("-nostdlib");
+    }
+    if let Some(ref triple) = cfg.target {
+        clang.arg(format!("--target={}", triple));
+    }
+    if let Some(ref ent) = cfg.entry {
+        clang.arg("-e").arg(ent);
+    }
+    if let Some(ref ls) = cfg.linker_script {
+        clang.arg("-T").arg(ls);
+    }
+
+    clang.arg("-Wno-override-module");
+
+    // Only link pthread when hosted (not freestanding/no-stdlib).
+    if !cfg.freestanding && !cfg.no_stdlib {
+        clang.arg("-lpthread");
+    }
+
+    // Write OBO runtime .ll to temp file if using --runtime obo.
+    let rt_ll_temp: Option<PathBuf> = if let Some(ref rt_ll_src) = runtime_ll_extra {
+        let p = env::temp_dir().join(format!("obo_rt_obo_{}.ll", process::id()));
+        if let Err(e) = fs::write(&p, rt_ll_src) {
+            eprintln!("Obo: Can't write temp runtime .ll — {} 😬", e);
+            process::exit(1);
+        }
+        Some(p)
+    } else {
+        None
+    };
+
+    clang
         .args(bridge_libs.iter().map(|l| format!("-l{}", l)))
         .arg("-o")
         .arg(exe)
         .arg(ll_str)
-        .arg(rt_str)
-        .status();
+        .arg(rt_str);
+
+    // Add the self-hosted runtime .ll if present.
+    if let Some(ref rt_ll_path) = rt_ll_temp {
+        clang.arg(rt_ll_path.to_str().unwrap());
+    }
+
+    let status = clang.status();
 
     let _ = fs::remove_file(&rt_c);
+    if let Some(ref rt_ll_path) = rt_ll_temp {
+        let _ = fs::remove_file(rt_ll_path);
+    }
 
     if !ll_persistent {
         let _ = fs::remove_file(&ll_path);
@@ -889,6 +959,52 @@ fn resolve_imports(
     // Prepend imported declarations before the root program's declarations
     imported_decls.extend(program);
     (imported_decls, has_errors)
+}
+
+/// Compile the self-hosted OBO runtime modules into LLVM IR + C bridge source.
+/// Returns (runtime_llvm_ir, bridge_c_source).
+fn compile_obo_runtime(dispatch_c: &str) -> Result<(String, String), String> {
+    // 1. Write all OBO runtime source files to a temp directory
+    //    (resolve_imports needs files on disk).
+    let tmp_dir = env::temp_dir().join(format!("obo_rt_obo_{}", process::id()));
+    fs::create_dir_all(&tmp_dir).map_err(|e| format!("Can't create temp dir: {}", e))?;
+
+    for (name, src) in runtime_obo::MODULES {
+        let path = tmp_dir.join(name);
+        fs::write(&path, src).map_err(|e| format!("Can't write {}: {}", name, e))?;
+    }
+
+    // 2. Compile obo_rt_all.obo through the full pipeline.
+    let master = tmp_dir.join("obo_rt_all.obo");
+    let master_path = master.to_string_lossy().to_string();
+    let source = runtime_obo::OBO_RT_ALL;
+
+    let (program, has_parse_errors) = compile_to_ast(&master_path, source);
+    if has_parse_errors {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err("parse errors in OBO runtime modules".to_string());
+    }
+
+    let (program, import_errors) = resolve_imports(&master_path, program);
+    if import_errors {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err("import resolution errors in OBO runtime modules".to_string());
+    }
+
+    let lowering = Lowering::new();
+    let mut ir_program = lowering.lower(&program);
+
+    // Compile with no_gc = true (prevent GC instrumentation on internal runtime allocations).
+    let (runtime_ll, _fn_ret) = llvm_emit::emit_program(&mut ir_program, false, true)
+        .map_err(|e| format!("OBO runtime emit failed: {}", e))?;
+
+    // 3. Clean up temp directory.
+    let _ = fs::remove_dir_all(&tmp_dir);
+
+    // 4. Build bridge C source: bridge code + per-program dispatch table.
+    let bridge_c = format!("{}\n{}", runtime_obo::OBO_RT_BRIDGE_C, dispatch_c);
+
+    Ok((runtime_ll, bridge_c))
 }
 
 fn compile_to_ast(path: &str, source: &str) -> (crate::parser::ast::Program, bool) {

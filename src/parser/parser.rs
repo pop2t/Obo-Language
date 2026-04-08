@@ -320,8 +320,19 @@ impl Parser {
                 | TokenKind::KwByte
                 | TokenKind::KwBits
                 | TokenKind::KwPointer
+                | TokenKind::KwHandle
                 | TokenKind::KwAtomic
                 | TokenKind::KwNull
+                | TokenKind::KwI8
+                | TokenKind::KwI16
+                | TokenKind::KwI32
+                | TokenKind::KwI64
+                | TokenKind::KwU8
+                | TokenKind::KwU16
+                | TokenKind::KwU32
+                | TokenKind::KwU64
+                | TokenKind::KwF32
+                | TokenKind::KwF64
                 | TokenKind::KwList
                 | TokenKind::KwMap
                 | TokenKind::KwSet
@@ -347,6 +358,7 @@ impl Parser {
                 | TokenKind::KwByte
                 | TokenKind::KwBits
                 | TokenKind::KwPointer
+                | TokenKind::KwHandle
                 | TokenKind::KwAtomic
                 | TokenKind::KwNull
                 | TokenKind::KwFunction

@@ -184,6 +184,12 @@ These **do not** stop infinite **loops in user code** (`forever`, etc.) at run t
 13. ✅ **Link stdlib** — System actors fully in C; Text/List/Map methods native via C stubs.
 14. ✅ **Memory model** — Arena-tracked heap with `obo_arena_free_all()` at exit.
 
+### Tier E — Bare Metal / Cross-compilation
+
+15. ✅ **Freestanding runtime** (`--freestanding`) — Tier 0 runtime via `#define OBO_FREESTANDING`; replaces libc with user-provided `obo_platform_alloc`, `obo_platform_free`, `obo_platform_putchar`. Stdlib Time/File functions stub out; pthreads/setjmp/math stubs provided. GC auto-disabled.
+16. ✅ **`@interrupt` attribute** — Functions with `@interrupt` emit with `naked noinline` attributes and `void` return type for bare-metal ISR handlers.
+17. ✅ **Target triples + cross-compilation** — CLI flags: `--target=<triple>` (passes `--target` to clang), `--entry=<symbol>` (`-e`), `--linker-script=<path>` (`-T`), `--no-stdlib` (`-ffreestanding -nostdlib`). Example: `obo build app.obo --freestanding --target=thumbv7em-none-eabi -T link.ld`
+
 ---
 
 ## "Done" criterion for Phase 7 (bootstrap)

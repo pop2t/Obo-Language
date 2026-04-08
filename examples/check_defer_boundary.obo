@@ -1,0 +1,9 @@
+/// Test that defer outside metal is rejected
+
+function main()
+{
+    defer
+    {
+        show "this should fail";
+    }
+}

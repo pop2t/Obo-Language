@@ -74,7 +74,7 @@ impl Parser {
     }
 
     fn parse_equality(&mut self) -> Result<Expr, ()> {
-        let mut expr = self.parse_comparison()?;
+        let mut expr = self.parse_bitwise_or()?;
 
         while self.check(TokenKind::EqualEqual)
             || self.check(TokenKind::BangEqual)
@@ -90,7 +90,7 @@ impl Parser {
                     let op = if negated { BinOp::NotEq } else { BinOp::Eq };
                     expr = Expr::Binary(Box::new(expr), op, Box::new(null_expr), span);
                 } else {
-                    let right = self.parse_comparison()?;
+                    let right = self.parse_bitwise_or()?;
                     let op = if negated { BinOp::NotEq } else { BinOp::Eq };
                     expr = Expr::Binary(Box::new(expr), op, Box::new(right), span);
                 }
@@ -102,9 +102,45 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 let span = token.span;
-                let right = self.parse_comparison()?;
+                let right = self.parse_bitwise_or()?;
                 expr = Expr::Binary(Box::new(expr), op, Box::new(right), span);
             }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_or(&mut self) -> Result<Expr, ()> {
+        let mut expr = self.parse_bitwise_xor()?;
+
+        while self.check(TokenKind::KwBitOr) {
+            let span = self.advance().span;
+            let right = self.parse_bitwise_xor()?;
+            expr = Expr::Binary(Box::new(expr), BinOp::BitOr, Box::new(right), span);
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Result<Expr, ()> {
+        let mut expr = self.parse_bitwise_and()?;
+
+        while self.check(TokenKind::Caret) {
+            let span = self.advance().span;
+            let right = self.parse_bitwise_and()?;
+            expr = Expr::Binary(Box::new(expr), BinOp::BitXor, Box::new(right), span);
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_and(&mut self) -> Result<Expr, ()> {
+        let mut expr = self.parse_comparison()?;
+
+        while self.check(TokenKind::Ampersand) {
+            let span = self.advance().span;
+            let right = self.parse_comparison()?;
+            expr = Expr::Binary(Box::new(expr), BinOp::BitAnd, Box::new(right), span);
         }
 
         Ok(expr)
@@ -135,17 +171,35 @@ impl Parser {
     }
 
     fn parse_range(&mut self) -> Result<Expr, ()> {
-        let expr = self.parse_addition()?;
+        let expr = self.parse_shift()?;
 
         if self.match_token(TokenKind::KwTo) {
-            let end = self.parse_addition()?;
+            let end = self.parse_shift()?;
             let step = if self.match_token(TokenKind::KwStep) {
-                Some(Box::new(self.parse_addition()?))
+                Some(Box::new(self.parse_shift()?))
             } else {
                 None
             };
             let span = expr.span();
             return Ok(Expr::Range(Box::new(expr), Box::new(end), step, span));
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, ()> {
+        let mut expr = self.parse_addition()?;
+
+        while self.check(TokenKind::LessLess) || self.check(TokenKind::GreaterGreater) {
+            let token = self.advance();
+            let op = match token.kind {
+                TokenKind::LessLess => BinOp::Shl,
+                TokenKind::GreaterGreater => BinOp::Shr,
+                _ => unreachable!(),
+            };
+            let span = token.span;
+            let right = self.parse_addition()?;
+            expr = Expr::Binary(Box::new(expr), op, Box::new(right), span);
         }
 
         Ok(expr)
@@ -202,6 +256,51 @@ impl Parser {
             let span = self.advance().span;
             let operand = self.parse_unary()?;
             return Ok(Expr::Unary(UnaryOp::Not, Box::new(operand), span));
+        }
+
+        if self.check(TokenKind::Tilde) {
+            let span = self.advance().span;
+            let operand = self.parse_unary()?;
+            return Ok(Expr::Unary(UnaryOp::BitNot, Box::new(operand), span));
+        }
+
+        if self.check(TokenKind::KwOwn) {
+            let span = self.advance().span;
+            let operand = self.parse_unary()?;
+            return Ok(Expr::Own(Box::new(operand), span));
+        }
+
+        // asm("template", "constraints", input1, input2, ...)
+        if self.check(TokenKind::KwAsm) {
+            let span = self.advance().span;
+            self.expect(TokenKind::LeftParen)?;
+            // Template string
+            let template = if self.check(TokenKind::StringLiteral) {
+                let s = self.advance().lexeme.clone();
+                s
+            } else {
+                self.error_at_current("expected asm template string");
+                return Err(());
+            };
+            let mut constraints = String::new();
+            let mut inputs = Vec::new();
+            if self.check(TokenKind::Comma) {
+                self.advance();
+                // Constraints string
+                if self.check(TokenKind::StringLiteral) {
+                    constraints = self.advance().lexeme.clone();
+                } else {
+                    self.error_at_current("expected asm constraints string");
+                    return Err(());
+                }
+                // Optional input operands
+                while self.check(TokenKind::Comma) {
+                    self.advance();
+                    inputs.push(self.parse_expression()?);
+                }
+            }
+            self.expect(TokenKind::RightParen)?;
+            return Ok(Expr::InlineAsm(template, constraints, inputs, span));
         }
 
         if self.check(TokenKind::LeftParen)
@@ -482,7 +581,8 @@ impl Parser {
                 Ok(Expr::ListLiteral(elements, token.span))
             }
             TokenKind::KwSet | TokenKind::KwQueue | TokenKind::KwStack
-            | TokenKind::KwPointer | TokenKind::KwBag | TokenKind::KwPair
+            | TokenKind::KwMap
+            | TokenKind::KwPointer | TokenKind::KwHandle | TokenKind::KwBag | TokenKind::KwPair
             | TokenKind::KwSlice | TokenKind::KwBuffer
             | TokenKind::KwGrid2d | TokenKind::KwGrid3d
             | TokenKind::KwReflect => {

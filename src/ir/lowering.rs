@@ -10,6 +10,7 @@ fn ast_param_ir_type(p: &ast::Param) -> IrParamType {
         Some(ast::TypeExpr::Named(name, _)) if name == "flag" => IrParamType::Bool,
         Some(ast::TypeExpr::Named(name, _)) if name == "number" => IrParamType::I64,
         Some(ast::TypeExpr::Named(name, _)) if name == "decimal" => IrParamType::F64,
+        Some(ast::TypeExpr::Named(name, _)) if name == "f32" || name == "f64" => IrParamType::F64,
         _ => IrParamType::I64,
     }
 }
@@ -17,10 +18,15 @@ fn ast_param_ir_type(p: &ast::Param) -> IrParamType {
 fn obo_type_to_llvm(te: &ast::TypeExpr) -> String {
     match te {
         ast::TypeExpr::Named(name, _) => match name.as_str() {
-            "number" => "i64".to_string(),
-            "decimal" => "double".to_string(),
+            "number" | "i64" | "u64" => "i64".to_string(),
+            "i8" | "u8" => "i8".to_string(),
+            "i16" | "u16" => "i16".to_string(),
+            "i32" | "u32" => "i32".to_string(),
+            "decimal" | "f64" => "double".to_string(),
+            "f32" => "float".to_string(),
             "text" => "i8*".to_string(),
             "pointer" => "i8*".to_string(),
+            "handle" => "i8*".to_string(),
             "flag" => "i64".to_string(),
             "byte" => "i8".to_string(),
             "nothing" => "void".to_string(),
@@ -55,6 +61,10 @@ fn collect_free_vars_expr(expr: &ast::Expr, out: &mut HashSet<String>) {
         ast::Expr::ChannelCreate(_) => {}
         ast::Expr::AtomicCreate(init, _) => { if let Some(e) = init { collect_free_vars_expr(e, out); } }
         ast::Expr::Pipe(l, r, _) => { collect_free_vars_expr(l, out); collect_free_vars_expr(r, out); }
+        ast::Expr::Own(e, _) => collect_free_vars_expr(e, out),
+        ast::Expr::InlineAsm(_, _, inputs, _) => {
+            for e in inputs { collect_free_vars_expr(e, out); }
+        }
         ast::Expr::Cast(_, e, _) => collect_free_vars_expr(e, out),
         ast::Expr::Action(_, body, _) => {
             for s in body { collect_free_vars_stmt(s, out); }
@@ -95,6 +105,9 @@ fn collect_free_vars_stmt(stmt: &ast::Statement, out: &mut HashSet<String>) {
         ast::Statement::Wait(w) => collect_free_vars_expr(&w.duration, out),
         ast::Statement::Block(stmts) | ast::Statement::SafeBlock(stmts, _) | ast::Statement::MetalBlock(stmts, _) => {
             for s in stmts { collect_free_vars_stmt(s, out); }
+        }
+        ast::Statement::Defer(body, _) => {
+            for s in body { collect_free_vars_stmt(s, out); }
         }
         ast::Statement::PossibleBlock(p) => {
             for s in &p.body { collect_free_vars_stmt(s, out); }
@@ -140,12 +153,18 @@ pub struct Lowering {
     actor_events: HashMap<String, Vec<String>>,
     /// Track which variables are set/queue/stack for method dispatch.
     collection_types: HashMap<String, String>,
+    /// Track variables that hold lists/maps/collections for mutation write-back.
+    writeback_vars: HashSet<String>,
     /// Generator function names (functions that contain `emit`).
     generator_functions: HashSet<String>,
+    /// Packed entity type names — these use MakePackedEntity instead of MakeEntity.
+    packed_types: HashSet<String>,
     /// Function bodies (AST) — used for inlining generators.
     function_bodies: HashMap<String, (Vec<ast::Param>, Vec<ast::Statement>)>,
     /// When lowering an inlined generator, emit statements store to this var and execute this body.
     gen_consumer: Option<(String, Vec<ast::Statement>)>,
+    /// Current source line being lowered (1-based, 0 = unknown).
+    current_line: u32,
 }
 
 struct LoopContext {
@@ -173,9 +192,12 @@ impl Lowering {
             choice_variants: HashMap::new(),
             actor_events: HashMap::new(),
             collection_types: HashMap::new(),
+            writeback_vars: HashSet::new(),
             generator_functions: HashSet::new(),
+            packed_types: HashSet::new(),
             function_bodies: HashMap::new(),
             gen_consumer: None,
+            current_line: 0,
         }
     }
 
@@ -257,8 +279,23 @@ impl Lowering {
                     }
                 }
                 ast::Declaration::Entity(e) => {
-                    let fields: Vec<String> = e.fields.iter().map(|f| f.name.clone()).collect();
-                    ir.entity_layouts.insert(e.name.clone(), fields);
+                    if e.is_packed {
+                        let fields: Vec<(String, String)> = e.fields.iter().map(|f| {
+                            let type_name = match &f.type_annotation {
+                                Some(ast::TypeExpr::Named(n, _)) => n.clone(),
+                                _ => "i64".to_string(),
+                            };
+                            (f.name.clone(), type_name)
+                        }).collect();
+                        ir.packed_layouts.insert(e.name.clone(), fields);
+                        self.packed_types.insert(e.name.clone());
+                        if e.is_value {
+                            ir.value_types.insert(e.name.clone());
+                        }
+                    } else {
+                        let fields: Vec<String> = e.fields.iter().map(|f| f.name.clone()).collect();
+                        ir.entity_layouts.insert(e.name.clone(), fields);
+                    }
                 }
                 _ => {}
             }
@@ -458,6 +495,14 @@ impl Lowering {
         }
 
         ir.functions.append(&mut self.closure_functions);
+
+        // Collect @export function names for function-pointer references.
+        for f in &ir.functions {
+            if f.is_export {
+                ir.export_fns.insert(f.name.clone());
+            }
+        }
+
         ir
     }
 
@@ -467,6 +512,7 @@ impl Lowering {
             "text" => IrParamType::Str,
             "flag" => IrParamType::Bool,
             "decimal" => IrParamType::F64,
+            "f32" | "f64" => IrParamType::F64,
             _ => IrParamType::Str, // entities, actors, lists, maps are all i8*
         }
     }
@@ -480,6 +526,8 @@ impl Lowering {
             return None;
         }
 
+        let fn_start_line = f.span.line as u32;
+        self.current_line = fn_start_line;
         self.next_reg = 0;
         self.next_block = 0;
         self.blocks = Vec::new();
@@ -510,11 +558,50 @@ impl Lowering {
             self.emit(Inst::Return(Vec::new()));
         }
 
+        let export_attr = f.attributes.iter().find(|a| a.name == "export");
+        let is_export = export_attr.is_some();
+        let is_interrupt = f.attributes.iter().any(|a| a.name == "interrupt");
+
+        let (export_param_types, export_ret_type) = if is_export {
+            let epts: Vec<String> = f.params.iter().map(|p| {
+                match &p.type_annotation {
+                    Some(te) => obo_type_to_llvm(te),
+                    None => "i64".to_string(),
+                }
+            }).collect();
+            // Return type from @export("void"), @export("i32"), etc.
+            let ert = export_attr.and_then(|a| {
+                if let Some(ast::Expr::StringLit(s, _)) = a.args.first() {
+                    Some(match s.as_str() {
+                        "void" | "nothing" => "void".to_string(),
+                        "i8" => "i8".to_string(),
+                        "i16" => "i16".to_string(),
+                        "i32" => "i32".to_string(),
+                        "i64" | "number" => "i64".to_string(),
+                        "f32" | "float" => "float".to_string(),
+                        "f64" | "double" | "decimal" => "double".to_string(),
+                        "pointer" | "i8*" => "i8*".to_string(),
+                        _ => "i64".to_string(),
+                    })
+                } else {
+                    None
+                }
+            });
+            (epts, ert)
+        } else {
+            (Vec::new(), None)
+        };
+
         Some(IrFunction {
             name: f.name.clone(),
             params,
             param_types,
             blocks: std::mem::take(&mut self.blocks),
+            start_line: fn_start_line,
+            is_export,
+            export_param_types,
+            export_ret_type,
+            is_interrupt,
         })
     }
 
@@ -531,7 +618,39 @@ impl Lowering {
         }
     }
 
+    fn stmt_line(stmt: &ast::Statement) -> u32 {
+        match stmt {
+            ast::Statement::VarDecl(s) => s.span.line as u32,
+            ast::Statement::Assignment(s) => s.span.line as u32,
+            ast::Statement::MultiAssignment(s) => s.span.line as u32,
+            ast::Statement::Show(s) => s.span.line as u32,
+            ast::Statement::Prompt(s) => s.span.line as u32,
+            ast::Statement::If(s) => s.span.line as u32,
+            ast::Statement::While(s) => s.span.line as u32,
+            ast::Statement::Forever(s) => s.span.line as u32,
+            ast::Statement::Count(s) => s.span.line as u32,
+            ast::Statement::ForIn(s) => s.span.line as u32,
+            ast::Statement::Check(s) => s.span.line as u32,
+            ast::Statement::Out(s) => s.span.line as u32,
+            ast::Statement::Stop(span) => span.line as u32,
+            ast::Statement::Restart(span) => span.line as u32,
+            ast::Statement::Wait(s) => s.span.line as u32,
+            ast::Statement::Run(s) => s.span.line as u32,
+            ast::Statement::Emit(s) => s.span.line as u32,
+            ast::Statement::PossibleBlock(s) => s.span.line as u32,
+            ast::Statement::SafeBlock(_, span) => span.line as u32,
+            ast::Statement::MetalBlock(_, span) => span.line as u32,
+            ast::Statement::Defer(_, span) => span.line as u32,
+            ast::Statement::Assert(s) => s.span.line as u32,
+            ast::Statement::Expr(_) | ast::Statement::Block(_) => 0,
+        }
+    }
+
     fn lower_statement(&mut self, stmt: &ast::Statement) {
+        // Track source line for debug info
+        let line = Self::stmt_line(stmt);
+        if line > 0 { self.current_line = line; }
+
         match stmt {
             ast::Statement::Show(s) => {
                 let val = self.lower_expr(&s.value);
@@ -543,8 +662,10 @@ impl Lowering {
                 if let ast::Expr::Identifier(name, _) = &a.target {
                     if let ast::Expr::Call(callee_expr, _, _) = &a.value {
                         if let ast::Expr::Identifier(cname, _) = callee_expr.as_ref() {
-                            if matches!(cname.as_str(), "set" | "queue" | "stack" | "pair" | "bag" | "buffer") {
-                                self.collection_types.insert(name.clone(), cname.clone());
+                            if matches!(cname.as_str(), "set" | "queue" | "stack" | "pair" | "bag" | "buffer" | "TextBuilder" | "Arena") {
+                                let ctype = if cname == "TextBuilder" { "textbuilder".to_string() } else if cname == "Arena" { "arena".to_string() } else { cname.clone() };
+                                self.collection_types.insert(name.clone(), ctype);
+                                self.writeback_vars.insert(name.clone());
                             }
                         }
                         // Track method calls on collection variables: b2 = b.add(42) → b2 is same type as b
@@ -552,9 +673,14 @@ impl Lowering {
                             if let ast::Expr::Identifier(var_name, _) = obj.as_ref() {
                                 if let Some(coll_type) = self.collection_types.get(var_name).cloned() {
                                     self.collection_types.insert(name.clone(), coll_type);
+                                    self.writeback_vars.insert(name.clone());
                                 }
                             }
                         }
+                    }
+                    // Track list and map literals for write-back (but NOT in collection_types to avoid dispatch intercept)
+                    if matches!(&a.value, ast::Expr::ListLiteral(_, _) | ast::Expr::MapLiteral(_, _)) {
+                        self.writeback_vars.insert(name.clone());
                     }
                 }
                 let val = self.lower_expr(&a.value);
@@ -596,8 +722,10 @@ impl Lowering {
                 // Track set/queue/stack/pair/bag/buffer variable types for method dispatch
                 if let ast::Expr::Call(callee_expr, _, _) = &v.initializer {
                     if let ast::Expr::Identifier(cname, _) = callee_expr.as_ref() {
-                        if matches!(cname.as_str(), "set" | "queue" | "stack" | "pair" | "bag" | "buffer" | "grid2d" | "grid3d") {
-                            self.collection_types.insert(v.name.clone(), cname.clone());
+                        if matches!(cname.as_str(), "set" | "queue" | "stack" | "pair" | "bag" | "buffer" | "grid2d" | "grid3d" | "TextBuilder" | "Arena") {
+                            let ctype = if cname == "TextBuilder" { "textbuilder".to_string() } else if cname == "Arena" { "arena".to_string() } else { cname.clone() };
+                            self.collection_types.insert(v.name.clone(), ctype);
+                            self.writeback_vars.insert(v.name.clone());
                         }
                     }
                     // Track method calls on collection variables: let b2 = b.add(42) → b2 is same type as b
@@ -605,9 +733,14 @@ impl Lowering {
                         if let ast::Expr::Identifier(var_name, _) = obj.as_ref() {
                             if let Some(coll_type) = self.collection_types.get(var_name).cloned() {
                                 self.collection_types.insert(v.name.clone(), coll_type);
+                                self.writeback_vars.insert(v.name.clone());
                             }
                         }
                     }
+                }
+                // Track list and map literals for write-back (but NOT in collection_types)
+                if matches!(&v.initializer, ast::Expr::ListLiteral(_, _) | ast::Expr::MapLiteral(_, _)) {
+                    self.writeback_vars.insert(v.name.clone());
                 }
                 let val = self.lower_expr(&v.initializer);
                 if self.current_actor_fields.contains(&v.name) {
@@ -663,6 +796,27 @@ impl Lowering {
             }
 
             ast::Statement::Expr(e) => {
+                // For mutating collection methods called on a variable
+                // (e.g. `items.add(4)`), write the result back to the variable.
+                if let ast::Expr::Call(callee, _, _) = e {
+                    if let ast::Expr::MemberAccess(obj, method, _) = callee.as_ref() {
+                        let is_mutating = matches!(
+                            method.as_str(),
+                            "add" | "insert" | "remove" | "removeAt"
+                            | "set" | "push" | "enqueue" | "pop" | "dequeue"
+                            | "sort" | "reverse" | "filter" | "map"
+                        );
+                        if is_mutating {
+                            if let ast::Expr::Identifier(var_name, _) = obj.as_ref() {
+                                if self.writeback_vars.contains(var_name) {
+                                    let result_op = self.lower_expr(e);
+                                    self.emit(Inst::Store(var_name.clone(), result_op));
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
                 self.lower_expr(e);
             }
 
@@ -712,7 +866,64 @@ impl Lowering {
             }
 
             ast::Statement::SafeBlock(stmts, _) | ast::Statement::MetalBlock(stmts, _) => {
-                self.lower_statements(stmts);
+                // Separate defer bodies from regular statements, track owned vars
+                let mut regular: Vec<&ast::Statement> = Vec::new();
+                let mut defers: Vec<&Vec<ast::Statement>> = Vec::new();
+                let mut owned_vars: Vec<String> = Vec::new();
+                for s in stmts {
+                    if let ast::Statement::Defer(body, _) = s {
+                        defers.push(body);
+                    } else {
+                        // Track owned variables from VarDecl: x = own expr;
+                        if let ast::Statement::VarDecl(v) = s {
+                            if matches!(&v.initializer, ast::Expr::Own(_, _)) {
+                                owned_vars.push(v.name.clone());
+                            }
+                        }
+                        // Track owned variables from Assignment: x = own expr;
+                        if let ast::Statement::Assignment(a) = s {
+                            if matches!(&a.value, ast::Expr::Own(_, _)) {
+                                if let ast::Expr::Identifier(name, _) = &a.target {
+                                    owned_vars.push(name.clone());
+                                }
+                            }
+                        }
+                        regular.push(s);
+                    }
+                }
+
+                // Lower regular statements
+                for s in &regular {
+                    self.lower_statement(s);
+                    if self.current().is_terminated() {
+                        break;
+                    }
+                }
+
+                // Lower defer bodies in reverse (LIFO) at scope exit
+                if !self.current().is_terminated() {
+                    for defer_body in defers.iter().rev() {
+                        self.lower_statements(defer_body);
+                        if self.current().is_terminated() {
+                            break;
+                        }
+                    }
+                }
+
+                // Auto-free owned variables in reverse order (LIFO)
+                if !self.current().is_terminated() {
+                    for var_name in owned_vars.iter().rev() {
+                        let ptr_reg = self.fresh_reg();
+                        self.emit(Inst::Load(ptr_reg, var_name.clone()));
+                        let free_reg = self.fresh_reg();
+                        self.emit(Inst::Call(free_reg, "__sys_pointer_free".to_string(), vec![Operand::Reg(ptr_reg)]));
+                    }
+                }
+            }
+
+            ast::Statement::Defer(_, _) => {
+                // Handled by MetalBlock/SafeBlock lowering above.
+                // Should not be reached at top level.
             }
 
             ast::Statement::Wait(w) => {
@@ -1189,6 +1400,11 @@ impl Lowering {
                     ast::BinOp::Greater => BinOp::Greater,
                     ast::BinOp::LessEq => BinOp::LessEq,
                     ast::BinOp::GreaterEq => BinOp::GreaterEq,
+                    ast::BinOp::BitAnd => BinOp::BitAnd,
+                    ast::BinOp::BitOr => BinOp::BitOr,
+                    ast::BinOp::BitXor => BinOp::BitXor,
+                    ast::BinOp::Shl => BinOp::Shl,
+                    ast::BinOp::Shr => BinOp::Shr,
                 };
                 let dst = self.fresh_reg();
                 self.emit(Inst::BinOp(dst, ir_op, lhs, rhs));
@@ -1200,6 +1416,7 @@ impl Lowering {
                 let ir_op = match op {
                     ast::UnaryOp::Neg => UnaryOp::Neg,
                     ast::UnaryOp::Not => UnaryOp::Not,
+                    ast::UnaryOp::BitNot => UnaryOp::BitNot,
                 };
                 let dst = self.fresh_reg();
                 self.emit(Inst::UnaryOp(dst, ir_op, src));
@@ -1295,6 +1512,12 @@ impl Lowering {
                             }
                             return Operand::Reg(list_dst);
                         }
+                        // map() constructor → empty map
+                        if name == "map" && !self.function_names.contains(name) && arg_ops.is_empty() {
+                            let dst = self.fresh_reg();
+                            self.emit(Inst::MakeMap(dst, vec![]));
+                            return Operand::Reg(dst);
+                        }
                         // pair(a, b) → MakeList with 2 elements
                         if name == "pair" && !self.function_names.contains(name) {
                             let list_dst = self.fresh_reg();
@@ -1316,6 +1539,28 @@ impl Lowering {
                             };
                             let dst = self.fresh_reg();
                             self.emit(Inst::Call(dst, "obo_buffer_new".to_string(), vec![size_op]));
+                            return Operand::Reg(dst);
+                        }
+                        // TextBuilder(cap?) → obo_textbuilder_new(cap)
+                        if name == "TextBuilder" && !self.function_names.contains(name) {
+                            let cap_op = if arg_ops.is_empty() {
+                                Operand::Const(Constant::Number(64))
+                            } else {
+                                arg_ops.into_iter().next().unwrap()
+                            };
+                            let dst = self.fresh_reg();
+                            self.emit(Inst::Call(dst, "obo_textbuilder_new".to_string(), vec![cap_op]));
+                            return Operand::Reg(dst);
+                        }
+                        // Arena(cap?) → obo_arena_create(cap)
+                        if name == "Arena" && !self.function_names.contains(name) {
+                            let cap_op = if arg_ops.is_empty() {
+                                Operand::Const(Constant::Number(1024))
+                            } else {
+                                arg_ops.into_iter().next().unwrap()
+                            };
+                            let dst = self.fresh_reg();
+                            self.emit(Inst::Call(dst, "obo_arena_create".to_string(), vec![cap_op]));
                             return Operand::Reg(dst);
                         }
                         // slice(list, start, end) → obo_list_slice(list, start, end)
@@ -1444,6 +1689,27 @@ impl Lowering {
                         // Set/queue/stack method calls → direct C runtime calls
                         if let ast::Expr::Identifier(var_name, _) = obj.as_ref() {
                             if let Some(coll_type) = self.collection_types.get(var_name).cloned() {
+                                // TextBuilder.append: dispatch to appendInt/appendChar for non-string args
+                                if coll_type == "textbuilder" && method == "append" && args.len() == 1 {
+                                    let arg_expr = &args[0].value;
+                                    let is_str_arg = matches!(arg_expr,
+                                        ast::Expr::StringLit(_, _) | ast::Expr::Interpolation(_, _)
+                                    );
+                                    let is_char_arg = matches!(arg_expr, ast::Expr::CharLit(_, _));
+                                    let fn_name = if is_str_arg {
+                                        "obo_textbuilder_append".to_string()
+                                    } else if is_char_arg {
+                                        "obo_textbuilder_appendChar".to_string()
+                                    } else {
+                                        "obo_textbuilder_appendInt".to_string()
+                                    };
+                                    let obj_op = self.lower_expr(obj);
+                                    let dst = self.fresh_reg();
+                                    let mut call_args = vec![obj_op];
+                                    call_args.extend(arg_ops);
+                                    self.emit(Inst::Call(dst, fn_name, call_args));
+                                    return Operand::Reg(dst);
+                                }
                                 let obj_op = self.lower_expr(obj);
                                 let dst = self.fresh_reg();
                                 let fn_name = format!("obo_{}_{}", coll_type, method);
@@ -1518,6 +1784,21 @@ impl Lowering {
                             self.emit(Inst::Call(dst, "obo_buffer_length".to_string(), vec![obj_op]));
                             return Operand::Reg(dst);
                         }
+                        // textbuilder.length → obo_textbuilder_length(tb)
+                        if coll_type == "textbuilder" && matches!(field.as_str(), "length" | "count") {
+                            let obj_op = self.lower_expr(obj);
+                            let dst = self.fresh_reg();
+                            self.emit(Inst::Call(dst, "obo_textbuilder_length".to_string(), vec![obj_op]));
+                            return Operand::Reg(dst);
+                        }
+                        // arena.used / arena.capacity → C runtime calls
+                        if coll_type == "arena" && matches!(field.as_str(), "used" | "capacity") {
+                            let obj_op = self.lower_expr(obj);
+                            let dst = self.fresh_reg();
+                            let fn_name = format!("obo_arena_{}", field);
+                            self.emit(Inst::Call(dst, fn_name, vec![obj_op]));
+                            return Operand::Reg(dst);
+                        }
                         if coll_type == "buffer" && field == "empty" {
                             let obj_op = self.lower_expr(obj);
                             let len_dst = self.fresh_reg();
@@ -1581,7 +1862,11 @@ impl Lowering {
                     (f.name.clone(), self.lower_expr(&f.value))
                 }).collect();
                 let dst = self.fresh_reg();
-                self.emit(Inst::MakeEntity(dst, name.clone(), field_ops));
+                if self.packed_types.contains(name) {
+                    self.emit(Inst::MakePackedEntity(dst, name.clone(), field_ops));
+                } else {
+                    self.emit(Inst::MakeEntity(dst, name.clone(), field_ops));
+                }
                 Operand::Reg(dst)
             }
 
@@ -1750,6 +2035,22 @@ impl Lowering {
                     }
                 }
             }
+
+            ast::Expr::Own(inner, _) => {
+                // Lower the inner expression. Ownership tracking is handled
+                // at the MetalBlock/SafeBlock level during scope exit.
+                self.lower_expr(inner)
+            }
+
+            ast::Expr::InlineAsm(template, constraints, inputs, _) => {
+                let mut input_ops = Vec::new();
+                for input in inputs {
+                    input_ops.push(self.lower_expr(input));
+                }
+                let dst = self.fresh_reg();
+                self.emit(Inst::InlineAsm(dst, template.clone(), constraints.clone(), input_ops));
+                Operand::Reg(dst)
+            }
         }
     }
 
@@ -1837,7 +2138,7 @@ impl Lowering {
     }
 
     fn emit(&mut self, inst: Inst) {
-        self.blocks[self.current_block].push(inst);
+        self.blocks[self.current_block].push_with_line(inst, self.current_line);
     }
 
     fn to_reg(&mut self, op: Operand) -> Reg {
@@ -1958,6 +2259,11 @@ impl Lowering {
             params: all_params,
             param_types: all_param_types,
             blocks: std::mem::take(&mut self.blocks),
+            start_line: 0,
+            is_export: false,
+            export_param_types: Vec::new(),
+            export_ret_type: None,
+            is_interrupt: false,
         };
         self.closure_functions.push(closure_func);
 

@@ -159,7 +159,7 @@ impl Checker {
         let all_fields = self.collect_actor_fields(&a.name);
         for member in &a.members {
             if let ActorMember::Method(m) = member {
-                self.check_actor_method(m, &all_fields);
+                self.check_actor_method(m, &all_fields, &a.name);
             }
         }
     }
@@ -196,13 +196,22 @@ impl Checker {
         fields
     }
 
-    fn check_actor_method(&mut self, m: &FunctionDecl, fields: &[(String, OboType, Span)]) {
+    fn check_actor_method(&mut self, m: &FunctionDecl, fields: &[(String, OboType, Span)], actor_name: &str) {
         if m.is_abstract {
             return;
         }
 
         self.current_function = Some(m.name.clone());
         self.symbols.push_scope();
+
+        // Define `self` so actor methods can reference self.field
+        self.symbols.define_variable(
+            "self",
+            OboType::Actor(actor_name.to_string()),
+            SymbolKind::Variable,
+            false,
+            m.span,
+        );
 
         for (name, ty, span) in fields {
             self.symbols

@@ -1,0 +1,17 @@
+// Minimal TextBuilder native test
+function main()
+{
+    tb = TextBuilder();
+    tb.append("Hello");
+    tb.append(", ");
+    tb.append("world");
+    tb.append("!");
+    result = tb.build();
+    show "Built: {result}";
+
+    tb2 = TextBuilder();
+    tb2.append("Count: ");
+    tb2.append(42);
+    tb2.append(" items");
+    show "Numbers: {tb2.build()}";
+}

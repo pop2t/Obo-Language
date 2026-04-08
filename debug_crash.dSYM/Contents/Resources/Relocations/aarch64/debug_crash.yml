@@ -1,0 +1,9 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     debug_crash
+relocations:
+  - { offset: 0x1E, size: 0x8, addend: 0x0, symName: _helper, symObjAddr: 0x0, symBinAddr: 0x1000005E8, symSize: 0x80 }
+  - { offset: 0x2B, size: 0x8, addend: 0x0, symName: _helper, symObjAddr: 0x0, symBinAddr: 0x1000005E8, symSize: 0x80 }
+  - { offset: 0x40, size: 0x8, addend: 0x0, symName: _middle, symObjAddr: 0x80, symBinAddr: 0x100000668, symSize: 0x7C }
+  - { offset: 0x55, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0xFC, symBinAddr: 0x1000006E4, symSize: 0x88 }
+...

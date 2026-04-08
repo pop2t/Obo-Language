@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::thread;
 
 use crate::parser::ast::Expr;
@@ -33,6 +33,7 @@ impl Interpreter {
                 next_task_id: 1,
                 bridge_functions,
                 generator_consumer: None,
+                value_types: HashSet::new(),
             };
 
             let res = match &expr_clone {

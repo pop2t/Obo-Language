@@ -7,13 +7,12 @@ function main()
     n = 50000;
 
     // Phase 1: Build a large map
-    m = ["__init": 0];
+    m = map();
     count(i = 0, n)
     {
         key = "key_" + i;
         m = m.set(key, i * 7 + 3);
     }
-    m = m.remove("__init");
     show "Phase 1: Built map with " + m.count + " entries";
 
     // Phase 2: Lookup every key and accumulate
@@ -32,7 +31,7 @@ function main()
         items = items.add(i % 100);
     }
 
-    freq = ["__init": 0];
+    freq = map();
     for (item in items)
     {
         key = "" + item;
@@ -45,19 +44,17 @@ function main()
             freq = freq.set(key, 1);
         }
     }
-    freq = freq.remove("__init");
     show "Phase 3: Frequency map has " + freq.count + " unique keys";
 
     // Phase 4: Nested map operations — build, query, aggregate
     total = 0;
     count(round = 0, 200)
     {
-        inner = ["__init": 0];
+        inner = map();
         count(j = 0, 500)
         {
             inner = inner.set("k" + j, round * 500 + j);
         }
-        inner = inner.remove("__init");
         count(j = 0, 500)
         {
             total = total + inner["k" + j];

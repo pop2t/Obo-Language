@@ -1,0 +1,266 @@
+// OBO Self-Hosted Runtime — Tagged Values (Tier 0)
+//
+// A tagged value is a 16-byte struct stored as raw memory:
+//   offset 0: tag (i64)  — OBO_V_I64=0, OBO_V_STR=1, OBO_V_LIST=2,
+//                           OBO_V_MAP=3, OBO_V_ENTITY=4, OBO_V_F64=5,
+//                           OBO_V_BOOL=6, OBO_V_NULL=7
+//   offset 8: payload (i64) — integer, pointer, or f64 reinterpreted as i64
+//
+// All functions take a pointer (i64) to the value struct.
+// Boxing functions allocate a 16-byte buffer and return its address.
+
+// ── Tag constants ──
+// Callers can use these directly or hardcode the numbers.
+// OBO_V_I64   = 0
+// OBO_V_STR   = 1
+// OBO_V_LIST  = 2
+// OBO_V_MAP   = 3
+// OBO_V_ENTITY= 4
+// OBO_V_F64   = 5
+// OBO_V_BOOL  = 6
+// OBO_V_NULL  = 7
+
+// ── Box an integer ──
+@export("i64")
+function rt_box_i64(n as number)
+{
+    v = pointer.alloc(16);
+    mem.store64(v, 0);
+    mem.store64(v + 8, n);
+    out v;
+}
+
+// ── Box a string (pointer) ──
+@export("i64")
+function rt_box_str(s as number)
+{
+    v = pointer.alloc(16);
+    mem.store64(v, 1);
+    mem.store64(v + 8, s);
+    out v;
+}
+
+// ── Box a list (pointer) ──
+@export("i64")
+function rt_box_list(lst as number)
+{
+    v = pointer.alloc(16);
+    mem.store64(v, 2);
+    mem.store64(v + 8, lst);
+    out v;
+}
+
+// ── Box a map (pointer) ──
+@export("i64")
+function rt_box_map(m as number)
+{
+    v = pointer.alloc(16);
+    mem.store64(v, 3);
+    mem.store64(v + 8, m);
+    out v;
+}
+
+// ── Box an entity (pointer) ──
+@export("i64")
+function rt_box_entity(e as number)
+{
+    v = pointer.alloc(16);
+    mem.store64(v, 4);
+    mem.store64(v + 8, e);
+    out v;
+}
+
+// ── Box a float (passed as i64 bitcast) ──
+@export("i64")
+function rt_box_f64(raw as number)
+{
+    v = pointer.alloc(16);
+    mem.store64(v, 5);
+    mem.store64(v + 8, raw);
+    out v;
+}
+
+// ── Box a boolean ──
+@export("i64")
+function rt_box_bool(b as number)
+{
+    v = pointer.alloc(16);
+    mem.store64(v, 6);
+    mem.store64(v + 8, b);
+    out v;
+}
+
+// ── Box null ──
+@export("i64")
+function rt_box_null()
+{
+    v = pointer.alloc(16);
+    mem.store64(v, 7);
+    mem.store64(v + 8, 0);
+    out v;
+}
+
+// ── Get tag ──
+@export("i64")
+function rt_value_tag(v as number)
+{
+    if (v == 0) { out 7; }
+    out mem.load64(v);
+}
+
+// ── Get payload ──
+@export("i64")
+function rt_value_payload(v as number)
+{
+    if (v == 0) { out 0; }
+    out mem.load64(v + 8);
+}
+
+// ── Unbox as i64 ──
+// Returns the integer value, converting from bool/f64 if needed.
+@export("i64")
+function rt_value_as_i64(v as number)
+{
+    if (v == 0) { out 0; }
+    tag = mem.load64(v);
+    payload = mem.load64(v + 8);
+    if (tag == 0) { out payload; }
+    if (tag == 6) { out payload; }
+    // tag == 7 (null) → 0
+    if (tag == 7) { out 0; }
+    // Other types → 0
+    out 0;
+}
+
+// ── Unbox as string pointer ──
+@export("i64")
+function rt_value_as_str(v as number)
+{
+    if (v == 0) { out 0; }
+    tag = mem.load64(v);
+    if (tag == 1) { out mem.load64(v + 8); }
+    out 0;
+}
+
+// ── Unbox as entity pointer ──
+@export("i64")
+function rt_value_as_entity(v as number)
+{
+    if (v == 0) { out 0; }
+    tag = mem.load64(v);
+    if (tag == 4) { out mem.load64(v + 8); }
+    out 0;
+}
+
+// ── Value is numeric? ──
+@export("i64")
+function rt_value_is_numeric(v as number)
+{
+    if (v == 0) { out 0; }
+    tag = mem.load64(v);
+    if (tag == 0) { out 1; }
+    if (tag == 5) { out 1; }
+    if (tag == 6) { out 1; }
+    out 0;
+}
+
+// ── Value truthiness ──
+// null/false/0/empty-string → 0, everything else → 1
+@export("i64")
+function rt_value_truthy(v as number)
+{
+    if (v == 0) { out 0; }
+    tag = mem.load64(v);
+    payload = mem.load64(v + 8);
+
+    // null → false
+    if (tag == 7) { out 0; }
+    // bool → payload
+    if (tag == 6) { out payload; }
+    // integer → non-zero
+    if (tag == 0)
+    {
+        if (payload == 0) { out 0; }
+        out 1;
+    }
+    // string → non-null and non-empty
+    if (tag == 1)
+    {
+        if (payload == 0) { out 0; }
+        ch = mem.load8(payload);
+        if (ch == 0) { out 0; }
+        out 1;
+    }
+    // list/map/entity/f64 → true (non-null pointer)
+    if (payload == 0) { out 0; }
+    out 1;
+}
+
+// ── Value compare ──
+// Returns -1, 0, or 1 for ordering. Same-type comparison only;
+// different types compare by tag number.
+@export("i64")
+function rt_value_compare(a as number, b as number)
+{
+    tag_a = 7;
+    tag_b = 7;
+    pay_a = 0;
+    pay_b = 0;
+    if (a != 0)
+    {
+        tag_a = mem.load64(a);
+        pay_a = mem.load64(a + 8);
+    }
+    if (b != 0)
+    {
+        tag_b = mem.load64(b);
+        pay_b = mem.load64(b + 8);
+    }
+
+    // Both null
+    if (tag_a == 7)
+    {
+        if (tag_b == 7) { out 0; }
+    }
+
+    // Both integers/bools (non-float)
+    if (tag_a == 0) { if (tag_b == 0)
+    {
+        if (pay_a < pay_b) { out 0 - 1; }
+        if (pay_a > pay_b) { out 1; }
+        out 0;
+    } }
+
+    // Both strings
+    if (tag_a == 1) { if (tag_b == 1)
+    {
+        out rt_strcmp(pay_a, pay_b);
+    } }
+
+    // Same type, compare by pointer/value
+    if (tag_a == tag_b)
+    {
+        if (pay_a < pay_b) { out 0 - 1; }
+        if (pay_a > pay_b) { out 1; }
+        out 0;
+    }
+
+    // Different types — compare by tag
+    if (tag_a < tag_b) { out 0 - 1; }
+    out 1;
+}
+
+// ── Free a boxed value ──
+@export("void")
+function rt_value_free(v as number)
+{
+    if (v == 0) { out 0; }
+    // If string, free the string payload too
+    tag = mem.load64(v);
+    if (tag == 1)
+    {
+        s = mem.load64(v + 8);
+        if (s != 0) { pointer.free(s); }
+    }
+    pointer.free(v);
+}

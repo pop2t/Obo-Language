@@ -1,0 +1,64 @@
+// Test obo_value.obo — self-hosted tagged values
+
+use obo_string;
+use obo_value;
+
+function main()
+{
+    // ── Box/unbox integer ──
+    vi = rt_box_i64(42);
+    show rt_value_tag(vi);        // expect 0
+    show rt_value_as_i64(vi);     // expect 42
+
+    // ── Box/unbox boolean ──
+    vb = rt_box_bool(1);
+    show rt_value_tag(vb);        // expect 6
+    show rt_value_as_i64(vb);     // expect 1
+
+    // ── Box/unbox null ──
+    vn = rt_box_null();
+    show rt_value_tag(vn);        // expect 7
+    show rt_value_as_i64(vn);     // expect 0
+
+    // ── Box/unbox string ──
+    // Build "hi" (104, 105, 0)
+    s = pointer.alloc(3);
+    mem.store8(s, 104);
+    mem.store8(s + 1, 105);
+    mem.store8(s + 2, 0);
+    vs = rt_box_str(s);
+    show rt_value_tag(vs);        // expect 1
+    str_ptr = rt_value_as_str(vs);
+    show rt_strlen(str_ptr);      // expect 2
+
+    // ── Truthiness ──
+    show rt_value_truthy(vi);     // expect 1  (42 is truthy)
+    show rt_value_truthy(vb);     // expect 1  (true)
+    show rt_value_truthy(vn);     // expect 0  (null)
+    show rt_value_truthy(vs);     // expect 1  (non-empty string)
+    show rt_value_truthy(0);      // expect 0  (null ptr)
+
+    // Box zero
+    v0 = rt_box_i64(0);
+    show rt_value_truthy(v0);     // expect 0  (0 is falsy)
+
+    // Box empty string
+    es = pointer.alloc(1);
+    mem.store8(es, 0);
+    ves = rt_box_str(es);
+    show rt_value_truthy(ves);    // expect 0  (empty string is falsy)
+
+    // ── Compare ──
+    va = rt_box_i64(10);
+    vb2 = rt_box_i64(20);
+    show rt_value_compare(va, vb2);   // expect -1  (10 < 20)
+    show rt_value_compare(vb2, va);   // expect 1   (20 > 10)
+    show rt_value_compare(va, va);    // expect 0   (equal)
+
+    // ── is_numeric ──
+    show rt_value_is_numeric(vi);  // expect 1
+    show rt_value_is_numeric(vs);  // expect 0
+    show rt_value_is_numeric(vn);  // expect 0
+
+    show 999;  // sentinel
+}

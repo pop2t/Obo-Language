@@ -1,0 +1,149 @@
+// Test: OBO Self-Hosted GC
+//
+// Tests the mark-sweep garbage collector module.
+// All assertions should print 1.
+// Compile: obo build runtime/test_gc.obo
+
+use obo_gc;
+
+function main()
+{
+// ── Test 1: Init and destroy ──
+ctx = rt_gc_init();
+show rt_gc_alloc_count(ctx) == 0;
+show rt_gc_threshold(ctx) == 256;
+rt_gc_destroy(ctx);
+show 1;
+
+// ── Test 2: Register and track ──
+ctx = rt_gc_init();
+buf = pointer.alloc(64);
+rt_gc_register(ctx, buf, 0);
+show rt_gc_alloc_count(ctx) == 1;
+show rt_gc_is_tracked(ctx, buf) == 1;
+rt_gc_destroy(ctx);
+
+// ── Test 3: Multiple registrations ──
+ctx = rt_gc_init();
+a = pointer.alloc(32);
+b = pointer.alloc(32);
+c = pointer.alloc(32);
+rt_gc_register(ctx, a, 0);
+rt_gc_register(ctx, b, 1);
+rt_gc_register(ctx, c, 8);
+show rt_gc_alloc_count(ctx) == 3;
+show rt_gc_is_tracked(ctx, a) == 1;
+show rt_gc_is_tracked(ctx, b) == 1;
+show rt_gc_is_tracked(ctx, c) == 1;
+rt_gc_destroy(ctx);
+
+// ── Test 4: Collect with no roots — newly registered survive first cycle ──
+ctx = rt_gc_init();
+d = pointer.alloc(16);
+e = pointer.alloc(16);
+rt_gc_register(ctx, d, 0);
+rt_gc_register(ctx, e, 0);
+show rt_gc_alloc_count(ctx) == 2;
+// First collect: mark=1 objects survive (just allocated)
+rt_gc_collect(ctx);
+show rt_gc_alloc_count(ctx) == 2;
+// Second collect: now mark=0, so they get freed
+rt_gc_collect(ctx);
+show rt_gc_alloc_count(ctx) == 0;
+rt_gc_destroy(ctx);
+
+// ── Test 5: Collect with root — rooted object survives ──
+ctx = rt_gc_init();
+f = pointer.alloc(64);
+rt_gc_register(ctx, f, 0);
+// Push a root slot that points to f.
+// We need a "slot" — an address whose value is f.
+// We'll use a small buffer to hold the slot.
+slot_buf = pointer.alloc(8);
+mem.store64(slot_buf, f);
+rt_gc_push_root(ctx, slot_buf);
+show rt_gc_alloc_count(ctx) == 1;
+rt_gc_collect(ctx);
+show rt_gc_alloc_count(ctx) == 1;
+show rt_gc_is_tracked(ctx, f) == 1;
+
+// Now pop root and collect twice — first clears mark, second frees
+rt_gc_pop_roots(ctx, 1);
+rt_gc_collect(ctx);
+rt_gc_collect(ctx);
+show rt_gc_alloc_count(ctx) == 0;
+pointer.free(slot_buf);
+rt_gc_destroy(ctx);
+
+// ── Test 6: Pause/Resume ──
+ctx = rt_gc_init();
+rt_gc_pause(ctx);
+g = pointer.alloc(32);
+rt_gc_register(ctx, g, 0);
+// Should NOT be registered because GC is paused
+show rt_gc_alloc_count(ctx) == 0;
+rt_gc_resume(ctx);
+h = pointer.alloc(32);
+rt_gc_register(ctx, h, 0);
+show rt_gc_alloc_count(ctx) == 1;
+// Clean up the paused allocation manually
+pointer.free(g);
+rt_gc_destroy(ctx);
+
+// ── Test 7: Many allocations (pool chunk boundary) ──
+ctx = rt_gc_init();
+i = 0;
+forever {
+    if (i >= 100) { stop; }
+    buf = pointer.alloc(16);
+    rt_gc_register(ctx, buf, 0);
+    i = i + 1;
+}
+show rt_gc_alloc_count(ctx) == 100;
+rt_gc_collect(ctx);
+rt_gc_collect(ctx);
+show rt_gc_alloc_count(ctx) == 0;
+rt_gc_destroy(ctx);
+
+// ── Test 8: Track string helper ──
+ctx = rt_gc_init();
+s = pointer.alloc(16);
+rt_gc_track_string(ctx, s);
+show rt_gc_alloc_count(ctx) == 1;
+show rt_gc_is_tracked(ctx, s) == 1;
+rt_gc_destroy(ctx);
+
+// ── Test 9: Free all without collect ──
+ctx = rt_gc_init();
+i = 0;
+forever {
+    if (i >= 50) { stop; }
+    buf = pointer.alloc(8);
+    rt_gc_register(ctx, buf, 8);
+    i = i + 1;
+}
+show rt_gc_alloc_count(ctx) == 50;
+rt_gc_free_all(ctx);
+show rt_gc_alloc_count(ctx) == 0;
+rt_gc_destroy(ctx);
+
+// ── Test 10: Threshold growth ──
+ctx = rt_gc_init();
+// Initial threshold is 256. Register 257 objects → should trigger collection (+growth)
+i = 0;
+forever {
+    if (i >= 257) { stop; }
+    buf = pointer.alloc(8);
+    rt_gc_register(ctx, buf, 0);
+    i = i + 1;
+}
+// Threshold should have grown (auto-collect was triggered)
+show rt_gc_threshold(ctx) > 256;
+// After two collects with no roots, count should be 0
+rt_gc_collect(ctx);
+rt_gc_collect(ctx);
+show rt_gc_alloc_count(ctx) == 0;
+rt_gc_destroy(ctx);
+
+show "All GC tests passed";
+}

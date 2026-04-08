@@ -1,0 +1,24 @@
+// Test fixed-width range checking
+
+function main()
+{
+    // i8 overflow should error
+    i8 x = (i8)127;
+    show x;  // 127
+
+    // u16 max
+    u16 y = (u16)65535;
+    show y;  // 65535
+
+    // i32 range
+    i32 z = (i32)2147483647;
+    show z;  // 2147483647
+
+    // Truncation on arithmetic (wraps within width)
+    i8 a = (i8)100;
+    i8 b = (i8)100;
+    i8 c = a + b;  // 200 truncated as i8 = -56  
+    show c;
+
+    show "Range tests done!";
+}

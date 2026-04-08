@@ -1,0 +1,75 @@
+// Metal GPU bridge - OBO wrapper for Apple Metal API via C bridge
+// This demonstrates the Obj-C bridge pattern (Option A from roadmap 7.2):
+// Thin C wrapper exposes Metal Obj-C API as C functions, OBO bridges those.
+
+bridge "metal"
+{
+    // Device
+    function cogal_mtl_create_device() out handle;
+    function cogal_mtl_release_device(dev as handle) out i64;
+
+    // Command queue
+    function cogal_mtl_create_command_queue(dev as handle) out handle;
+    function cogal_mtl_release_command_queue(queue as handle) out i64;
+
+    // Buffer
+    function cogal_mtl_create_buffer(dev as handle, size as i64, options as i32) out handle;
+    function cogal_mtl_buffer_contents(buf as handle) out pointer;
+    function cogal_mtl_buffer_length(buf as handle) out i64;
+    function cogal_mtl_release_buffer(buf as handle) out i64;
+
+    // Compute pipeline
+    function cogal_mtl_create_library_from_source(dev as handle, src as text) out handle;
+    function cogal_mtl_create_function(lib as handle, name as text) out handle;
+    function cogal_mtl_create_compute_pipeline(dev as handle, func as handle) out handle;
+    function cogal_mtl_release_pipeline(pipe as handle) out i64;
+
+    // Command buffer + encoder
+    function cogal_mtl_create_command_buffer(queue as handle) out handle;
+    function cogal_mtl_create_compute_encoder(cmdbuf as handle) out handle;
+    function cogal_mtl_encoder_set_pipeline(encoder as handle, pipe as handle) out i64;
+    function cogal_mtl_encoder_set_buffer(encoder as handle, buf as handle, offset as i64, index as i32) out i64;
+    function cogal_mtl_encoder_dispatch(encoder as handle, width as i64, height as i64, depth as i64) out i64;
+    function cogal_mtl_encoder_end(encoder as handle) out i64;
+    function cogal_mtl_commit_and_wait(cmdbuf as handle) out i64;
+}
+
+/// Example: GPU vector addition using Metal compute
+function main() {
+    n = 1024;
+
+    metal {
+        // Create device and queue
+        dev = cogal_mtl_create_device();
+        defer { cogal_mtl_release_device(dev); }
+
+        queue = cogal_mtl_create_command_queue(dev);
+        defer { cogal_mtl_release_command_queue(queue); }
+
+        // Create buffers (shared memory = option 0)
+        buf_a = own cogal_mtl_create_buffer(dev, n * 4, 0);
+        buf_b = own cogal_mtl_create_buffer(dev, n * 4, 0);
+        buf_c = own cogal_mtl_create_buffer(dev, n * 4, 0);
+
+        // Compile a pre-compiled shader library (no inline source needed)
+        lib = cogal_mtl_create_library_from_source(dev, "add_arrays_shader");
+        func = cogal_mtl_create_function(lib, "add_arrays");
+        pipeline = cogal_mtl_create_compute_pipeline(dev, func);
+        defer { cogal_mtl_release_pipeline(pipeline); }
+
+        // Dispatch compute
+        cmdbuf = cogal_mtl_create_command_buffer(queue);
+        encoder = cogal_mtl_create_compute_encoder(cmdbuf);
+        cogal_mtl_encoder_set_pipeline(encoder, pipeline);
+        cogal_mtl_encoder_set_buffer(encoder, buf_a, 0, 0);
+        cogal_mtl_encoder_set_buffer(encoder, buf_b, 0, 1);
+        cogal_mtl_encoder_set_buffer(encoder, buf_c, 0, 2);
+        cogal_mtl_encoder_dispatch(encoder, n, 1, 1);
+        cogal_mtl_encoder_end(encoder);
+        cogal_mtl_commit_and_wait(cmdbuf);
+
+        show "GPU compute complete";
+    }
+
+    show "done";
+}

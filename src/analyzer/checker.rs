@@ -14,6 +14,7 @@ pub struct Checker {
     pub errors: Vec<OboError>,
     current_function: Option<String>,
     in_loop: bool,
+    in_metal: bool,
     /// Number of extra arguments injected by a surrounding pipe operator.
     pipe_extra_args: usize,
 }
@@ -25,6 +26,7 @@ impl Checker {
             errors: Vec::new(),
             current_function: None,
             in_loop: false,
+            in_metal: false,
             pipe_extra_args: 0,
         }
     }

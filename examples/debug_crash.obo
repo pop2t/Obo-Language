@@ -1,0 +1,22 @@
+// Test debug stack traces
+// Build with: obo build examples/debug_crash.obo --debug -o debug_crash
+
+function helper(x)
+{
+    show "in helper";
+    result = x * 2;
+    out result;
+}
+
+function middle(n)
+{
+    show "in middle";
+    out helper(n + 1);
+}
+
+function main()
+{
+    show "About to call...";
+    val = middle(42);
+    show val;
+}

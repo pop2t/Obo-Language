@@ -1,0 +1,14 @@
+/// Test that non-packed entity creation is rejected inside metal blocks
+entity BadEntity
+{
+    name;
+}
+
+function main()
+{
+    metal
+    {
+        bad = BadEntity { name = "should fail"; };
+        show bad.name;
+    }
+}

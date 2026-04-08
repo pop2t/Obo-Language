@@ -15,12 +15,13 @@ impl Interpreter {
 
         // Handle set/queue/stack/pair/bag/buffer/slice constructors
         if let Expr::Identifier(name, _) = callee {
-            if matches!(name.as_str(), "set" | "queue" | "stack" | "pair" | "bag" | "buffer" | "slice" | "grid2d" | "grid3d") && self.env.get(name).is_none() {
+            if matches!(name.as_str(), "map" | "set" | "queue" | "stack" | "pair" | "bag" | "buffer" | "slice" | "grid2d" | "grid3d" | "TextBuilder" | "Arena") && self.env.get(name).is_none() {
                 let arg_vals: Vec<Value> = args
                     .iter()
                     .map(|a| self.eval_expr(&a.value))
                     .collect::<Result<_, _>>()?;
                 return match name.as_str() {
+                    "map" => Ok(Value::Map(OboMap::new())),
                     "set" => {
                         let mut seen = Vec::new();
                         for v in arg_vals {
@@ -54,6 +55,26 @@ impl Interpreter {
                         } else {
                             return Err("Obo: buffer() takes 0 or 1 arguments 🤨".into());
                         }
+                    }
+                    "TextBuilder" => {
+                        let cap = if arg_vals.len() == 1 {
+                            match &arg_vals[0] {
+                                Value::Number(n) => *n as usize,
+                                _ => 64,
+                            }
+                        } else { 64 };
+                        Ok(Value::TextBuilder(std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(cap)))))
+                    }
+                    "Arena" => {
+                        let cap = if arg_vals.len() == 1 {
+                            match &arg_vals[0] {
+                                Value::Number(n) => *n as usize,
+                                _ => 1024,
+                            }
+                        } else { 1024 };
+                        Ok(Value::Arena(std::sync::Arc::new(std::sync::Mutex::new(
+                            super::super::value::OboArenaInterp::new(cap)
+                        ))))
                     }
                     "slice" => {
                         if arg_vals.len() != 3 {
@@ -305,7 +326,7 @@ impl Interpreter {
                                 result.push(item.clone());
                             }
                         }
-                        return Ok(Value::List(result));
+                        return self.maybe_writeback(obj_expr, Value::List(result));
                     }
                     return Err("Obo: filter needs an action 🤨".into());
                 }
@@ -315,7 +336,7 @@ impl Interpreter {
                         for item in items {
                             result.push(self.call_value(action_val, &[item.clone()])?);
                         }
-                        return Ok(Value::List(result));
+                        return self.maybe_writeback(obj_expr, Value::List(result));
                     }
                     return Err("Obo: map needs an action 🤨".into());
                 }
@@ -352,16 +373,47 @@ impl Interpreter {
                     }
                     return Err("Obo: all needs an action 🤨".into());
                 }
+                "sortBy" => {
+                    if let Some(action_val) = arg_vals.first() {
+                        let mut sorted = items.to_vec();
+                        let action_clone = action_val.clone();
+                        let mut err: Option<String> = None;
+                        sorted.sort_by(|a, b| {
+                            if err.is_some() {
+                                return std::cmp::Ordering::Equal;
+                            }
+                            match self.call_value(&action_clone, &[a.clone(), b.clone()]) {
+                                Ok(Value::Number(n)) => {
+                                    if n < 0 { std::cmp::Ordering::Less }
+                                    else if n > 0 { std::cmp::Ordering::Greater }
+                                    else { std::cmp::Ordering::Equal }
+                                }
+                                Ok(Value::Decimal(d)) => {
+                                    if d < 0.0 { std::cmp::Ordering::Less }
+                                    else if d > 0.0 { std::cmp::Ordering::Greater }
+                                    else { std::cmp::Ordering::Equal }
+                                }
+                                Ok(_) => std::cmp::Ordering::Equal,
+                                Err(e) => { err = Some(e); std::cmp::Ordering::Equal }
+                            }
+                        });
+                        if let Some(e) = err {
+                            return Err(e);
+                        }
+                        return self.maybe_writeback(obj_expr, Value::List(sorted));
+                    }
+                    return Err("Obo: sortBy needs a comparator action 🤨".into());
+                }
                 _ => {}
             }
             if let Some(result) = stdlib::collections::list_method(items, method, &arg_vals) {
-                return result;
+                return self.maybe_writeback_result(obj_expr, method, result);
             }
         }
 
         if let Value::Map(ref map) = object {
             if let Some(result) = stdlib::collections::map_method(map, method, &arg_vals) {
-                return result;
+                return self.maybe_writeback_result(obj_expr, method, result);
             }
         }
 
@@ -373,19 +425,19 @@ impl Interpreter {
 
         if let Value::Set(ref items) = object {
             if let Some(result) = stdlib::collections::set_method(items, method, &arg_vals) {
-                return result;
+                return self.maybe_writeback_result(obj_expr, method, result);
             }
         }
 
         if let Value::Queue(ref items) = object {
             if let Some(result) = stdlib::collections::queue_method(items, method, &arg_vals) {
-                return result;
+                return self.maybe_writeback_result(obj_expr, method, result);
             }
         }
 
         if let Value::Stack(ref items) = object {
             if let Some(result) = stdlib::collections::stack_method(items, method, &arg_vals) {
-                return result;
+                return self.maybe_writeback_result(obj_expr, method, result);
             }
         }
 
@@ -398,6 +450,82 @@ impl Interpreter {
         if let Value::Buffer(ref buf) = object {
             if let Some(result) = stdlib::collections::buffer_method(buf, method, &arg_vals) {
                 return result;
+            }
+        }
+
+        if let Value::TextBuilder(ref buf) = object {
+            match method {
+                "append" => {
+                    let mut data = buf.lock().unwrap();
+                    for val in &arg_vals {
+                        match val {
+                            Value::Text(s) => data.extend_from_slice(s.as_bytes()),
+                            Value::Char(c) => {
+                                let mut cbuf = [0u8; 4];
+                                let encoded = c.encode_utf8(&mut cbuf);
+                                data.extend_from_slice(encoded.as_bytes());
+                            }
+                            Value::Number(n) => {
+                                let s = n.to_string();
+                                data.extend_from_slice(s.as_bytes());
+                            }
+                            other => {
+                                let s = other.to_string();
+                                data.extend_from_slice(s.as_bytes());
+                            }
+                        }
+                    }
+                    return Ok(object.clone());
+                }
+                "build" | "toString" => {
+                    let data = buf.lock().unwrap();
+                    let s = String::from_utf8_lossy(&data).into_owned();
+                    return Ok(Value::Text(s));
+                }
+                "length" | "count" => {
+                    let data = buf.lock().unwrap();
+                    return Ok(Value::Number(data.len() as i64));
+                }
+                "clear" => {
+                    let mut data = buf.lock().unwrap();
+                    data.clear();
+                    return Ok(object.clone());
+                }
+                _ => return Err(format!("Obo: TextBuilder.{}() — I don't know that one 🤨", method)),
+            }
+        }
+
+        if let Value::Arena(ref a) = object {
+            match method {
+                "alloc" => {
+                    // arena.alloc(size) → returns pointer offset as number
+                    let size = match arg_vals.first() {
+                        Some(Value::Number(n)) => *n as usize,
+                        _ => return Err("Obo: Arena.alloc() requires an integer size 🤨".into()),
+                    };
+                    let mut arena = a.lock().unwrap();
+                    let offset = arena.alloc(size);
+                    return Ok(Value::Number(offset as i64));
+                }
+                "reset" => {
+                    let mut arena = a.lock().unwrap();
+                    arena.reset();
+                    return Ok(object.clone());
+                }
+                "destroy" => {
+                    let mut arena = a.lock().unwrap();
+                    arena.reset();
+                    return Ok(Value::Null);
+                }
+                "used" => {
+                    let arena = a.lock().unwrap();
+                    return Ok(Value::Number(arena.used as i64));
+                }
+                "capacity" => {
+                    let arena = a.lock().unwrap();
+                    return Ok(Value::Number(arena.cap as i64));
+                }
+                _ => return Err(format!("Obo: Arena.{}() — I don't know that one 🤨", method)),
             }
         }
 
@@ -489,6 +617,33 @@ impl Interpreter {
         }
 
         if let Value::Instance(ref inst) = object {
+            // Value type methods: dot, length
+            if self.value_types.contains(&inst.type_name) {
+                match method {
+                    "dot" if arg_vals.len() == 1 => {
+                        if let Value::Instance(ref other) = arg_vals[0] {
+                            if other.type_name == inst.type_name {
+                                let lfields = inst.snapshot_fields();
+                                let rfields = other.snapshot_fields();
+                                let mut sum = Value::Decimal(0.0);
+                                for (key, lval) in &lfields {
+                                    if let Some(rval) = rfields.get(key) {
+                                        let product = self.eval_binary(lval, &BinOp::Mul, rval)?;
+                                        sum = self.eval_binary(&sum, &BinOp::Add, &product)?;
+                                    }
+                                }
+                                return Ok(sum);
+                            }
+                        }
+                        return Err(format!("Obo: dot() requires matching value type"));
+                    }
+                    "length" if arg_vals.is_empty() => {
+                        let fields = inst.snapshot_fields();
+                        return Ok(Value::Number(fields.len() as i64));
+                    }
+                    _ => {} // fall through to actor method lookup
+                }
+            }
             if let Some(method_decl) = self.find_actor_method(&inst.type_name, method) {
                 let func = OboFunction {
                     name: method_decl.name.clone(),
@@ -498,6 +653,8 @@ impl Interpreter {
                 };
                 let fields = inst.snapshot_fields();
                 self.env.push_scope();
+                // Define `self` so methods can use self.field
+                self.env.define("self", Value::Instance(inst.clone()));
                 for (key, value) in &fields {
                     self.env.define(key, value.clone());
                 }
@@ -518,9 +675,16 @@ impl Interpreter {
                 }
                 let result = self.call_function(&func, &arg_vals)?;
 
+                // Write back fields modified via direct scope variables
                 for key in fields.keys() {
                     if let Some(new_val) = self.env.get(key) {
                         inst.set_field(key.clone(), new_val.clone());
+                    }
+                }
+                // Also write back fields modified via self.field = ...
+                if let Some(Value::Instance(self_inst)) = self.env.get("self").cloned() {
+                    for (key, val) in self_inst.snapshot_fields() {
+                        inst.set_field(key, val);
                     }
                 }
                 self.env.pop_scope();
@@ -665,5 +829,37 @@ impl Interpreter {
                 Value::List(vec![Value::Map(OboMap::from_entries(info))])
             }
         }
+    }
+
+    /// For mutating collection methods called on a variable, write the result
+    /// back to the source variable so `items.add(4)` mutates in-place.
+    fn maybe_writeback(&mut self, obj_expr: &Expr, value: Value) -> Result<Value, String> {
+        if let Expr::Identifier(name, _) = obj_expr {
+            self.env.set(name, value.clone());
+        }
+        Ok(value)
+    }
+
+    /// Like maybe_writeback but only for methods that produce a new collection
+    /// (add, insert, remove, removeAt, set, push, enqueue, pop, dequeue).
+    fn maybe_writeback_result(
+        &mut self,
+        obj_expr: &Expr,
+        method: &str,
+        result: Result<Value, String>,
+    ) -> Result<Value, String> {
+        let value = result?;
+        let is_mutating = matches!(
+            method,
+            "add" | "insert" | "remove" | "removeAt"
+            | "set" | "push" | "enqueue" | "pop" | "dequeue"
+            | "sort" | "reverse"
+        );
+        if is_mutating {
+            if let Expr::Identifier(name, _) = obj_expr {
+                self.env.set(name, value.clone());
+            }
+        }
+        Ok(value)
     }
 }

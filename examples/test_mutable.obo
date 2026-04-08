@@ -1,0 +1,43 @@
+// Test in-place mutation of lists
+function main()
+{
+    items = [1, 2, 3];
+    show "before add: {items}";
+
+    items.add(4);
+    show "after add: {items}";
+
+    items.add(5, 6);
+    show "after add(5,6): {items}";
+
+    items.removeAt(0);
+    show "after removeAt(0): {items}";
+
+    items.insert(0, 99);
+    show "after insert(0, 99): {items}";
+
+    items.remove(3);
+    show "after remove(3): {items}";
+
+    // Test map mutation  
+    scores = ["Alice": 95, "Bob": 87];
+    show "before set: {scores}";
+
+    scores.set("Charlie", 92);
+    show "after set: {scores}";
+
+    scores.remove("Bob");
+    show "after remove: {scores}";
+
+    // Test queue
+    q = queue(10, 20, 30);
+    show "queue before: {q}";
+    q.push(40);
+    show "queue after push: {q}";
+
+    // Test stack
+    st = stack(1, 2, 3);
+    show "stack before: {st}";
+    st.push(4);
+    show "stack after push: {st}";
+}

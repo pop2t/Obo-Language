@@ -10,6 +10,13 @@ pub enum OboType {
     Char,
     Flag,
     Byte,
+    I8,
+    I16,
+    I32,
+    U16,
+    U32,
+    U64,
+    F32,
     Null,
     Void,
 
@@ -37,7 +44,16 @@ pub enum OboType {
 
 impl OboType {
     pub fn is_numeric(&self) -> bool {
-        matches!(self, OboType::Number | OboType::Decimal)
+        matches!(self, OboType::Number | OboType::Decimal | OboType::Byte
+            | OboType::I8 | OboType::I16 | OboType::I32
+            | OboType::U16 | OboType::U32 | OboType::U64
+            | OboType::F32)
+    }
+
+    pub fn is_integer(&self) -> bool {
+        matches!(self, OboType::Number | OboType::Byte
+            | OboType::I8 | OboType::I16 | OboType::I32
+            | OboType::U16 | OboType::U32 | OboType::U64)
     }
 
     pub fn is_error(&self) -> bool {
@@ -64,6 +80,17 @@ impl OboType {
         }
         match (self, target) {
             (OboType::Number, OboType::Decimal) => true,
+            // f32 can widen to decimal (f64)
+            (OboType::F32, OboType::Decimal) => true,
+            // number can narrow to f32 (explicit)
+            (OboType::Number, OboType::F32) => true,
+            // Fixed-width integers can assign to number (widening)
+            (OboType::Byte | OboType::I8 | OboType::I16 | OboType::I32
+             | OboType::U16 | OboType::U32, OboType::Number) => true,
+            // Unsigned can assign to larger signed
+            (OboType::Byte | OboType::U16, OboType::I32) => true,
+            (OboType::Byte, OboType::I16) => true,
+            (OboType::Byte, OboType::U16) => true,
             (OboType::Null, OboType::Nullable(_)) => true,
             (inner, OboType::Nullable(expected)) => inner.can_assign_to(expected),
             (OboType::List(a), OboType::List(b)) => a.can_assign_to(b),
@@ -86,6 +113,13 @@ impl OboType {
             OboType::Char => "char".to_string(),
             OboType::Flag => "flag".to_string(),
             OboType::Byte => "byte".to_string(),
+            OboType::I8 => "i8".to_string(),
+            OboType::I16 => "i16".to_string(),
+            OboType::I32 => "i32".to_string(),
+            OboType::U16 => "u16".to_string(),
+            OboType::U32 => "u32".to_string(),
+            OboType::U64 => "u64".to_string(),
+            OboType::F32 => "f32".to_string(),
             OboType::Null => "null".to_string(),
             OboType::Void => "void".to_string(),
             OboType::List(inner) => format!("list of {}", inner.display_name()),

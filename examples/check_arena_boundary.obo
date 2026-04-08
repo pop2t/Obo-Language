@@ -1,0 +1,7 @@
+/// Test that Arena outside metal is rejected
+
+function main()
+{
+    arena = Arena(1024);
+    show arena.used();
+}

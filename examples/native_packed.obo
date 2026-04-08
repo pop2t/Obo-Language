@@ -1,0 +1,46 @@
+/// Test packed entity (struct) — P3 2.2
+packed entity TCPHeader
+{
+    src_port as u16;
+    dst_port as u16;
+    seq_num as u32;
+}
+
+packed entity Pixel
+{
+    r as u8;
+    g as u8;
+    b as u8;
+    a as u8;
+}
+
+function main()
+{
+    // Create and read back a packed entity
+    header = TCPHeader {
+        src_port = 8080;
+        dst_port = 443;
+        seq_num = 12345;
+    };
+    show header.src_port;
+    show header.dst_port;
+    show header.seq_num;
+
+    // Create a pixel
+    px = Pixel {
+        r = 255;
+        g = 128;
+        b = 0;
+        a = 255;
+    };
+    show px.r;
+    show px.g;
+    show px.b;
+    show px.a;
+
+    // Mutate a packed field
+    header.dst_port = 8443;
+    show header.dst_port;
+
+    show "packed structs work!";
+}

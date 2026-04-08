@@ -1,0 +1,51 @@
+// Test new mem intrinsics: mem.copy, mem.zero, mem.load32, mem.store32
+
+@export("void")
+function test_mem32()
+{
+    buf = pointer.alloc(64);
+    mem.store32(buf, 42);
+    mem.store32(buf + 4, 99);
+    v1 = mem.load32(buf);
+    v2 = mem.load32(buf + 4);
+    show v1;
+    show v2;
+    pointer.free(buf);
+}
+
+@export("void")
+function test_mem_copy()
+{
+    src = pointer.alloc(64);
+    dst = pointer.alloc(64);
+    mem.store64(src, 123456789);
+    mem.store64(src + 8, 987654321);
+    mem.copy(dst, src, 16);
+    v1 = mem.load64(dst);
+    v2 = mem.load64(dst + 8);
+    show v1;
+    show v2;
+    pointer.free(src);
+    pointer.free(dst);
+}
+
+@export("void")
+function test_mem_zero()
+{
+    buf = pointer.alloc(64);
+    mem.store64(buf, 999);
+    mem.store64(buf + 8, 888);
+    mem.zero(buf, 16);
+    v1 = mem.load64(buf);
+    v2 = mem.load64(buf + 8);
+    show v1;
+    show v2;
+    pointer.free(buf);
+}
+
+function main()
+{
+    test_mem32();
+    test_mem_copy();
+    test_mem_zero();
+}
