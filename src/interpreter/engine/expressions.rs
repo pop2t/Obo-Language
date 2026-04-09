@@ -92,6 +92,16 @@ impl Interpreter {
                             )
                         })
                     }
+                    (Value::F64List(items), Value::Number(i)) => {
+                        let i = *i as usize;
+                        items.get(i).map(|d| Value::Decimal(*d)).ok_or_else(|| {
+                            format!(
+                                "Obo: Index {} is out of bounds (list has {} items) 😬",
+                                i,
+                                items.len()
+                            )
+                        })
+                    }
                     (Value::Text(s), Value::Number(i)) => {
                         let i = *i as usize;
                         s.chars().nth(i).map(Value::Char).ok_or_else(|| {
@@ -112,7 +122,17 @@ impl Interpreter {
                     .iter()
                     .map(|e| self.eval_expr(e))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::List(items))
+                // Auto-promote to F64List if all elements are numeric (Decimal or Number)
+                if !items.is_empty() && items.iter().all(|v| matches!(v, Value::Decimal(_) | Value::Number(_))) {
+                    let f64s: Vec<f64> = items.iter().map(|v| match v {
+                        Value::Decimal(d) => *d,
+                        Value::Number(n) => *n as f64,
+                        _ => unreachable!(),
+                    }).collect();
+                    Ok(Value::F64List(f64s))
+                } else {
+                    Ok(Value::List(items))
+                }
             }
             Expr::MapLiteral(pairs, _) => {
                 let items: Vec<(Value, Value)> = pairs
@@ -340,6 +360,11 @@ impl Interpreter {
                     result.extend(b.clone());
                     Ok(Value::List(result))
                 }
+                (Value::F64List(a), Value::F64List(b)) => {
+                    let mut result = a.clone();
+                    result.extend(b.iter());
+                    Ok(Value::F64List(result))
+                }
                 _ => Err(format!(
                     "Obo: Can't add {} and {} 🤨",
                     lhs.type_name(),
@@ -524,6 +549,12 @@ impl Interpreter {
             }
             Value::List(items) => {
                 if let Some(val) = stdlib::collections::list_member(items, member) {
+                    return Ok(val);
+                }
+                Ok(Value::BuiltinFn(format!("list.{}", member)))
+            }
+            Value::F64List(items) => {
+                if let Some(val) = stdlib::collections::f64list_member(items, member) {
                     return Ok(val);
                 }
                 Ok(Value::BuiltinFn(format!("list.{}", member)))

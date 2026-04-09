@@ -56,6 +56,7 @@ pub enum Value {
     Flag(bool),
     Null,
     List(Vec<Value>),
+    F64List(Vec<f64>),
     Set(Vec<Value>),
     Queue(Vec<Value>),
     Stack(Vec<Value>),
@@ -253,6 +254,7 @@ impl Value {
             Value::Flag(_) => "flag",
             Value::Null => "null",
             Value::List(_) => "list",
+            Value::F64List(_) => "list",
             Value::Set(_) => "set",
             Value::Queue(_) => "queue",
             Value::Stack(_) => "stack",
@@ -292,6 +294,7 @@ impl Value {
             Value::Decimal(n) => *n != 0.0,
             Value::Text(s) => !s.is_empty(),
             Value::List(l) => !l.is_empty(),
+            Value::F64List(l) => !l.is_empty(),
             Value::Set(l) => !l.is_empty(),
             Value::Queue(l) => !l.is_empty(),
             Value::Stack(l) => !l.is_empty(),
@@ -338,6 +341,16 @@ impl fmt::Display for Value {
             Value::Flag(b) => write!(f, "{}", b),
             Value::Null => write!(f, "null"),
             Value::List(items) => {
+                write!(f, "[")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "]")
+            }
+            Value::F64List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
@@ -480,6 +493,7 @@ impl PartialEq for Value {
             (Value::Grid2D { rows: r1, cols: c1, data: d1 }, Value::Grid2D { rows: r2, cols: c2, data: d2 }) => r1 == r2 && c1 == c2 && d1 == d2,
             (Value::Grid3D { x: x1, y: y1, z: z1, data: d1 }, Value::Grid3D { x: x2, y: y2, z: z2, data: d2 }) => x1 == x2 && y1 == y2 && z1 == z2 && d1 == d2,
             (Value::ChoiceValue(_, a, _), Value::ChoiceValue(_, b, _)) => a == b,
+            (Value::F64List(a), Value::F64List(b)) => a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y),
             (Value::TextBuilder(a), Value::TextBuilder(b)) => Arc::ptr_eq(a, b),
             (Value::Arena(a), Value::Arena(b)) => Arc::ptr_eq(a, b),
             _ => false,
@@ -504,6 +518,7 @@ impl Hash for Value {
             Value::FixedInt(n, w) => { n.hash(state); w.hash(state); }
             Value::Pointer(p) => p.hash(state),
             Value::Handle(h) => h.hash(state),
+            Value::F64List(items) => { for x in items { x.to_bits().hash(state); } }
             Value::Instance(i) => i.instance_id.hash(state),
             Value::Null => {}
             _ => {}

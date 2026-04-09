@@ -35,6 +35,24 @@ pub fn list_member(items: &[Value], member: &str) -> Option<Value> {
 pub fn list_method(items: &[Value], method: &str, args: &[Value]) -> Option<Result<Value, String>> {
     match method {
         "add" => {
+            // Promote empty or all-numeric List to F64List when adding numeric values
+            let all_args_numeric = args.iter().all(|a| matches!(a, Value::Decimal(_) | Value::Number(_)));
+            let all_existing_numeric = items.iter().all(|v| matches!(v, Value::Decimal(_) | Value::Number(_)));
+            if all_args_numeric && all_existing_numeric {
+                let mut f64s: Vec<f64> = items.iter().map(|v| match v {
+                    Value::Decimal(d) => *d,
+                    Value::Number(n) => *n as f64,
+                    _ => unreachable!(),
+                }).collect();
+                for a in args {
+                    match a {
+                        Value::Decimal(d) => f64s.push(*d),
+                        Value::Number(n) => f64s.push(*n as f64),
+                        _ => unreachable!(),
+                    }
+                }
+                return Some(Ok(Value::F64List(f64s)));
+            }
             let mut new_items = items.to_vec();
             new_items.extend(args.to_vec());
             Some(Ok(Value::List(new_items)))
@@ -142,6 +160,170 @@ pub fn list_method(items: &[Value], method: &str, args: &[Value]) -> Option<Resu
                         return Some(Ok(Value::List(items[s..e].to_vec())));
                     }
                     return Some(Ok(Value::List(Vec::new())));
+                }
+            }
+            Some(Err("Obo: slice needs a start and end index 🤌".into()))
+        }
+        _ => None,
+    }
+}
+
+/// F64List member access (properties like .count, .first, .last, .empty, .reversed, .sorted)
+pub fn f64list_member(items: &[f64], member: &str) -> Option<Value> {
+    match member {
+        "count" | "length" => Some(Value::Number(items.len() as i64)),
+        "first" => Some(items.first().map(|d| Value::Decimal(*d)).unwrap_or(Value::Null)),
+        "last" => Some(items.last().map(|d| Value::Decimal(*d)).unwrap_or(Value::Null)),
+        "empty" => Some(Value::Flag(items.is_empty())),
+        "reversed" => {
+            let mut rev = items.to_vec();
+            rev.reverse();
+            Some(Value::F64List(rev))
+        }
+        "sorted" => {
+            let mut sorted = items.to_vec();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            Some(Value::F64List(sorted))
+        }
+        "distinct" => {
+            let mut unique: Vec<f64> = Vec::new();
+            for &item in items {
+                if !unique.iter().any(|x| *x == item) {
+                    unique.push(item);
+                }
+            }
+            Some(Value::F64List(unique))
+        }
+        _ => None,
+    }
+}
+
+/// F64List method calls
+pub fn f64list_method(items: &[f64], method: &str, args: &[Value]) -> Option<Result<Value, String>> {
+    match method {
+        "add" => {
+            let mut new_items = items.to_vec();
+            for arg in args {
+                match arg {
+                    Value::Decimal(d) => new_items.push(*d),
+                    Value::Number(n) => new_items.push(*n as f64),
+                    _ => return Some(Err("Obo: F64 list only accepts numbers 🤨".into())),
+                }
+            }
+            Some(Ok(Value::F64List(new_items)))
+        }
+        "insert" => {
+            if args.len() >= 2 {
+                if let Value::Number(idx) = &args[0] {
+                    let val = match &args[1] {
+                        Value::Decimal(d) => *d,
+                        Value::Number(n) => *n as f64,
+                        _ => return Some(Err("Obo: F64 list only accepts numbers 🤨".into())),
+                    };
+                    let mut new_items = items.to_vec();
+                    let i = (*idx).max(0) as usize;
+                    if i <= new_items.len() {
+                        new_items.insert(i, val);
+                    }
+                    return Some(Ok(Value::F64List(new_items)));
+                }
+            }
+            Some(Err("Obo: insert needs an index and a value 🤌".into()))
+        }
+        "remove" => {
+            if let Some(target) = args.first() {
+                let target_f = match target {
+                    Value::Decimal(d) => *d,
+                    Value::Number(n) => *n as f64,
+                    _ => return Some(Err("Obo: F64 list only accepts numbers 🤨".into())),
+                };
+                let mut new_items = items.to_vec();
+                if let Some(pos) = new_items.iter().position(|x| *x == target_f) {
+                    new_items.remove(pos);
+                }
+                return Some(Ok(Value::F64List(new_items)));
+            }
+            Some(Err("Obo: remove needs a value to remove 🤌".into()))
+        }
+        "removeAt" => {
+            if let Some(Value::Number(idx)) = args.first() {
+                let mut new_items = items.to_vec();
+                let i = *idx as usize;
+                if i < new_items.len() {
+                    new_items.remove(i);
+                }
+                return Some(Ok(Value::F64List(new_items)));
+            }
+            Some(Err("Obo: removeAt needs an index 🤌".into()))
+        }
+        "indexOf" => {
+            if let Some(target) = args.first() {
+                let target_f = match target {
+                    Value::Decimal(d) => *d,
+                    Value::Number(n) => *n as f64,
+                    _ => return Some(Ok(Value::Number(-1))),
+                };
+                let pos = items.iter().position(|x| *x == target_f);
+                return Some(Ok(match pos {
+                    Some(i) => Value::Number(i as i64),
+                    None => Value::Number(-1),
+                }));
+            }
+            Some(Err("Obo: indexOf needs a value to find 🤌".into()))
+        }
+        "contains" => {
+            if let Some(target) = args.first() {
+                let target_f = match target {
+                    Value::Decimal(d) => *d,
+                    Value::Number(n) => *n as f64,
+                    _ => return Some(Ok(Value::Flag(false))),
+                };
+                return Some(Ok(Value::Flag(items.iter().any(|x| *x == target_f))));
+            }
+            Some(Err("Obo: contains needs a value to look for 🤌".into()))
+        }
+        "join" => {
+            let sep = match args.first() {
+                Some(Value::Text(s)) => s.as_str(),
+                _ => ", ",
+            };
+            let parts: Vec<String> = items.iter().map(|v| format!("{}", v)).collect();
+            Some(Ok(Value::Text(parts.join(sep))))
+        }
+        "reverse" => {
+            let mut rev = items.to_vec();
+            rev.reverse();
+            Some(Ok(Value::F64List(rev)))
+        }
+        "sort" => {
+            let mut sorted = items.to_vec();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            Some(Ok(Value::F64List(sorted)))
+        }
+        "take" => {
+            if let Some(Value::Number(n)) = args.first() {
+                let n = (*n).max(0) as usize;
+                return Some(Ok(Value::F64List(items.iter().take(n).copied().collect())));
+            }
+            Some(Err("Obo: take needs a number 🤌".into()))
+        }
+        "skip" => {
+            if let Some(Value::Number(n)) = args.first() {
+                let n = (*n).max(0) as usize;
+                return Some(Ok(Value::F64List(items.iter().skip(n).copied().collect())));
+            }
+            Some(Err("Obo: skip needs a number 🤌".into()))
+        }
+        "slice" => {
+            if args.len() >= 2 {
+                if let (Value::Number(start), Value::Number(end)) = (&args[0], &args[1]) {
+                    let s = (*start).max(0) as usize;
+                    let e = (*end).max(0) as usize;
+                    let e = e.min(items.len());
+                    if s <= e {
+                        return Some(Ok(Value::F64List(items[s..e].to_vec())));
+                    }
+                    return Some(Ok(Value::F64List(Vec::new())));
                 }
             }
             Some(Err("Obo: slice needs a start and end index 🤌".into()))

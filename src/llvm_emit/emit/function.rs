@@ -39,7 +39,8 @@ fn param_low_type(f: &IrFunction, index: usize) -> LowType {
             | IrParamType::Entity
             | IrParamType::Dyn
             | IrParamType::Closure
-            | IrParamType::Task => LowType::Entity,
+            | IrParamType::Task
+            | IrParamType::F64List => LowType::Entity,
         };
     }
     match f.param_types.get(index).copied().unwrap_or(IrParamType::I64) {
@@ -47,6 +48,7 @@ fn param_low_type(f: &IrFunction, index: usize) -> LowType {
         IrParamType::Str => LowType::Str,
         IrParamType::List => LowType::List,
         IrParamType::MixedList => LowType::MixedList,
+        IrParamType::F64List => LowType::F64List,
         IrParamType::Map => LowType::Map,
         IrParamType::Entity => LowType::Entity,
         IrParamType::Dyn => LowType::Dyn,
@@ -506,6 +508,7 @@ pub(super) fn emit_function(
                             // initialized as [] (List) and later upgraded by .add(str).
                             let dominated = match (var_ty.get(name).copied(), ret_ty) {
                                 (Some(LowType::MixedList), LowType::List) => true,
+                                (Some(LowType::F64List), LowType::List) => true,
                                 (Some(LowType::Dyn), LowType::I64 | LowType::Bool) => true,
                                 // Don't narrow Dyn to a specific container type:
                                 // a variable assigned Dyn in one block and
@@ -646,7 +649,8 @@ pub(super) fn emit_function(
                 | LowType::Dyn
                 | LowType::Closure
                 | LowType::Task
-                | LowType::MixedList => {
+                | LowType::MixedList
+                | LowType::F64List => {
                     let ptr = format!("%closure_arg_ptr_{}", i);
                     s.push_str(&format!("  {} = inttoptr i64 %arg{} to i8*\n", ptr, i));
                     s.push_str(&format!("  store i8* {}, i8** %reg_{}_ptr\n", ptr, i));
@@ -698,7 +702,8 @@ pub(super) fn emit_function(
             | LowType::Dyn
             | LowType::Closure
             | LowType::Task
-            | LowType::MixedList => {
+            | LowType::MixedList
+            | LowType::F64List => {
                 s.push_str(&format!("  store i8* %arg{}, i8** %reg_{}_ptr\n", i, i));
             }
         }
@@ -1019,7 +1024,8 @@ pub(super) fn emit_function(
                 | LowType::Dyn
                 | LowType::Closure
                 | LowType::Task
-                | LowType::MixedList => {
+                | LowType::MixedList
+                | LowType::F64List => {
                     s.push_str("  ret i8* null\n");
                 }
                 LowType::F64 => s.push_str("  ret double 0.0\n"),
@@ -1158,7 +1164,7 @@ fn emit_truthy_i64(
             s.push_str(&format!("  {} = zext i1 {} to i64\n", ext, cmp));
             Ok(ext)
         }
-        LowType::MixedList => {
+        LowType::MixedList | LowType::F64List => {
             // Inline mixed_list_len: OboMixedList.len at offset 0
             let len_ptr = fresh_tmp(tmp);
             s.push_str(&format!("  {} = bitcast i8* {} to i64*\n", len_ptr, value));
@@ -1605,7 +1611,8 @@ fn emit_inst(
                 | LowType::Dyn
                 | LowType::Closure
                 | LowType::Task
-                | LowType::MixedList => {
+                | LowType::MixedList
+                | LowType::F64List => {
                     s.push_str(&format!("  store i8* {}, i8** {}\n", val, dst));
                 }
             }
@@ -1854,21 +1861,34 @@ fn emit_inst(
                         _ => unreachable!(),
                     };
                     let t = fresh_tmp(tmp);
-                    // 'contract' allows LLVM to form fused multiply-add (FMA)
-                    // instructions without affecting other fast-math semantics.
-                    s.push_str(&format!("  {} = {} contract double {}, {}\n", t, opc, fl, fr));
+                    // 'reassoc contract' allows LLVM to reorder and fuse FP ops,
+                    // enabling auto-vectorization of reductions and FMA formation.
+                    s.push_str(&format!("  {} = {} reassoc contract double {}, {}\n", t, opc, fl, fr));
                     s.push_str(&format!("  store double {}, double* {}\n", t, dst));
                 }
                 Add | Sub | Mul | Div | Mod => {
                     match op {
                         Div => {
+                            // If divisor is a non-zero constant, use inline sdiv
+                            // instead of obo_safe_div to allow LLVM optimization.
+                            let is_const_nonzero = matches!(rhs, Operand::Const(Constant::Number(n)) if *n != 0);
                             let t = fresh_tmp(tmp);
-                            s.push_str(&format!("  {} = call i64 @obo_safe_div(i64 {}, i64 {})\n", t, lv, rv));
+                            if is_const_nonzero {
+                                s.push_str(&format!("  {} = sdiv i64 {}, {}\n", t, lv, rv));
+                            } else {
+                                s.push_str(&format!("  {} = call i64 @obo_safe_div(i64 {}, i64 {})\n", t, lv, rv));
+                            }
                             s.push_str(&format!("  store i64 {}, i64* {}\n", t, dst));
                         }
                         Mod => {
+                            // If divisor is a non-zero constant, use inline srem.
+                            let is_const_nonzero = matches!(rhs, Operand::Const(Constant::Number(n)) if *n != 0);
                             let t = fresh_tmp(tmp);
-                            s.push_str(&format!("  {} = call i64 @obo_safe_mod(i64 {}, i64 {})\n", t, lv, rv));
+                            if is_const_nonzero {
+                                s.push_str(&format!("  {} = srem i64 {}, {}\n", t, lv, rv));
+                            } else {
+                                s.push_str(&format!("  {} = call i64 @obo_safe_mod(i64 {}, i64 {})\n", t, lv, rv));
+                            }
                             s.push_str(&format!("  store i64 {}, i64* {}\n", t, dst));
                         }
                         _ => {
@@ -2114,7 +2134,8 @@ fn emit_inst(
                 | LowType::Dyn
                 | LowType::Closure
                 | LowType::Task
-                | LowType::MixedList => {
+                | LowType::MixedList
+                | LowType::F64List => {
                     s.push_str(&format!("  {} = load i8*, i8** {}\n", t, src));
                     s.push_str(&format!("  store i8* {}, i8** {}\n", t, dst));
                 }
@@ -2152,7 +2173,8 @@ fn emit_inst(
                 | LowType::Dyn
                 | LowType::Closure
                 | LowType::Task
-                | LowType::MixedList => {
+                | LowType::MixedList
+                | LowType::F64List => {
                     s.push_str(&format!("  store i8* {}, i8** {}\n", val, ptr));
                 }
             }
@@ -2621,6 +2643,26 @@ fn emit_inst(
                         call_args.join(", ")
                     ));
                     store_reg_value(s, *r, &out, ret_ty);
+                }
+                LowType::F64List => {
+                    if method == "add" {
+                        if args.is_empty() {
+                            return Err("native build: f64 list add expects 1 argument".into());
+                        }
+                        let (arg_val, arg_ty) = emit_operand(s, tmp, &args[0], reg_ty, var_ty, string_table)?;
+                        let arg_f64 = coerce_value(s, tmp, &arg_val, arg_ty, LowType::F64)?;
+                        let out = fresh_tmp(tmp);
+                        s.push_str(&format!(
+                            "  {} = call i8* @obo_f64_list_add(i8* {}, double {})\n",
+                            out, obj_val, arg_f64
+                        ));
+                        store_reg_value(s, *r, &out, LowType::F64List);
+                    } else {
+                        return Err(format!(
+                            "native build: unsupported f64 list method '{}'",
+                            method
+                        ));
+                    }
                 }
                 LowType::Map => {
                     if method == "set" {
@@ -3121,6 +3163,27 @@ fn emit_inst(
                         ));
                     }
                 }
+                LowType::F64List => {
+                    // Inline f64_list_len: OboF64List.len at offset 0
+                    let len_ptr = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = bitcast i8* {} to i64*\n", len_ptr, obj_val));
+                    let len = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = load i64, i64* {}\n", len, len_ptr));
+                    if name == "empty" {
+                        let cmp = fresh_tmp(tmp);
+                        let ext = fresh_tmp(tmp);
+                        s.push_str(&format!("  {} = icmp eq i64 {}, 0\n", cmp, len));
+                        s.push_str(&format!("  {} = zext i1 {} to i64\n", ext, cmp));
+                        store_reg_value(s, *r, &ext, LowType::Bool);
+                    } else if name == "count" || name == "length" {
+                        store_reg_value(s, *r, &len, LowType::I64);
+                    } else {
+                        return Err(format!(
+                            "native build: unsupported f64 list field '{}'",
+                            name
+                        ));
+                    }
+                }
                 LowType::Map => {
                     if name == "count" || name == "length" {
                         let out = fresh_tmp(tmp);
@@ -3611,6 +3674,25 @@ fn emit_inst(
                         store_reg_value(s, *r, &elem_ptr, LowType::Dyn);
                     }
                 }
+                LowType::F64List => {
+                    let idx_i64 = coerce_value(s, tmp, &idx_val, idx_ty, LowType::I64)?;
+                    // Inline f64_list_get: OboF64List = {i64 len, i64 cap, double[] items}
+                    // items start at offset 16. Element at offset 16 + idx * 8.
+                    let byte_off = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = mul i64 {}, 8\n", byte_off, idx_i64));
+                    let total_off = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = add i64 {}, 16\n", total_off, byte_off));
+                    let elem_ptr = fresh_tmp(tmp);
+                    s.push_str(&format!(
+                        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                        elem_ptr, obj_val, total_off
+                    ));
+                    let typed_ptr = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = bitcast i8* {} to double*\n", typed_ptr, elem_ptr));
+                    let out = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = load double, double* {}\n", out, typed_ptr));
+                    store_reg_value(s, *r, &out, LowType::F64);
+                }
                 LowType::Map | LowType::Entity => {
                     let obj_ptr = coerce_value(s, tmp, &obj_val, obj_ty, LowType::Map)?;
                     if matches!(idx_ty, LowType::I64 | LowType::Bool) {
@@ -3762,6 +3844,24 @@ fn emit_inst(
                         obj_val, idx_i64, boxed
                     ));
                 }
+                LowType::F64List => {
+                    let idx_i64 = coerce_value(s, tmp, &idx_val, idx_ty, LowType::I64)?;
+                    let value_f64 = coerce_value(s, tmp, &value_val, value_ty, LowType::F64)?;
+                    // Inline f64_list_set: OboF64List = {i64 len, i64 cap, double[] items}
+                    // items start at offset 16. Element at offset 16 + idx * 8.
+                    let byte_off = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = mul i64 {}, 8\n", byte_off, idx_i64));
+                    let total_off = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = add i64 {}, 16\n", total_off, byte_off));
+                    let elem_ptr = fresh_tmp(tmp);
+                    s.push_str(&format!(
+                        "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                        elem_ptr, obj_val, total_off
+                    ));
+                    let typed_ptr = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = bitcast i8* {} to double*\n", typed_ptr, elem_ptr));
+                    s.push_str(&format!("  store double {}, double* {}\n", value_f64, typed_ptr));
+                }
                 LowType::Map | LowType::Dyn | LowType::Entity => {
                     let obj_ptr = coerce_value(s, tmp, &obj_val, obj_ty, LowType::Map)?;
                     if matches!(idx_ty, LowType::I64 | LowType::Bool) {
@@ -3829,6 +3929,46 @@ fn emit_inst(
                     ));
                 }
                 store_reg_value(s, *r, &mixed, LowType::MixedList);
+            } else if list_ty == LowType::F64List {
+                let list = if elements.is_empty() {
+                    let out = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = call i8* @obo_f64_list_new(i64 0, double* null)\n", out));
+                    out
+                } else {
+                    let array = fresh_tmp(tmp);
+                    s.push_str(&format!("  {} = alloca [{} x double]\n", array, elements.len()));
+                    for (index, element) in elements.iter().enumerate() {
+                        let (value, value_ty) = emit_operand(s, tmp, element, reg_ty, var_ty, string_table)?;
+                        let value_f64 = coerce_value(s, tmp, &value, value_ty, LowType::F64)?;
+                        let slot = fresh_tmp(tmp);
+                        s.push_str(&format!(
+                            "  {} = getelementptr inbounds [{} x double], [{} x double]* {}, i64 0, i64 {}\n",
+                            slot,
+                            elements.len(),
+                            elements.len(),
+                            array,
+                            index
+                        ));
+                        s.push_str(&format!("  store double {}, double* {}\n", value_f64, slot));
+                    }
+                    let data = fresh_tmp(tmp);
+                    s.push_str(&format!(
+                        "  {} = getelementptr inbounds [{} x double], [{} x double]* {}, i64 0, i64 0\n",
+                        data,
+                        elements.len(),
+                        elements.len(),
+                        array
+                    ));
+                    let out = fresh_tmp(tmp);
+                    s.push_str(&format!(
+                        "  {} = call i8* @obo_f64_list_new(i64 {}, double* {})\n",
+                        out,
+                        elements.len(),
+                        data
+                    ));
+                    out
+                };
+                store_reg_value(s, *r, &list, LowType::F64List);
             } else {
                 let list = if elements.is_empty() {
                     let out = fresh_tmp(tmp);
@@ -4100,7 +4240,8 @@ fn emit_inst(
                 | LowType::Dyn
                 | LowType::Closure
                 | LowType::Task
-                | LowType::MixedList => {
+                | LowType::MixedList
+                | LowType::F64List => {
                     let out_ptr = fresh_tmp(tmp);
                     s.push_str(&format!("  {} = inttoptr i64 {} to i8*\n", out_ptr, out_raw));
                     store_reg_value(s, *r, &out_ptr, ret_ty);
@@ -4173,6 +4314,7 @@ fn emit_inst(
                     s.push_str(&format!("  call i32 (i8*, ...) @printf(i8* {}, i8* {})\n", gep, val));
                 }
                 LowType::List => s.push_str(&format!("  call void @obo_list_print(i8* {})\n", val)),
+                LowType::F64List => s.push_str(&format!("  call void @obo_list_print(i8* {})\n", val)),
                 LowType::Map => s.push_str(&format!("  call void @obo_map_print(i8* {})\n", val)),
                 LowType::Entity => {
                     s.push_str(&format!("  call void @obo_entity_print(i8* {})\n", val));
@@ -4351,7 +4493,8 @@ fn emit_inst(
                     | LowType::Dyn
                     | LowType::Closure
                     | LowType::Task
-                    | LowType::MixedList => s.push_str(&format!("  ret i8* {}\n", ret_val)),
+                    | LowType::MixedList
+                    | LowType::F64List => s.push_str(&format!("  ret i8* {}\n", ret_val)),
                     LowType::F64 => s.push_str(&format!("  ret double {}\n", ret_val)),
                     LowType::I64 | LowType::Bool => s.push_str(&format!("  ret i64 {}\n", ret_val)),
                 }
@@ -4387,7 +4530,8 @@ fn emit_inst(
                         | LowType::Dyn
                         | LowType::Closure
                         | LowType::Task
-                        | LowType::MixedList => s.push_str(&format!("  ret i8* {}\n", coerced)),
+                        | LowType::MixedList
+                        | LowType::F64List => s.push_str(&format!("  ret i8* {}\n", coerced)),
                         LowType::F64 => s.push_str(&format!("  ret double {}\n", coerced)),
                         LowType::I64 | LowType::Bool => s.push_str(&format!("  ret i64 {}\n", coerced)),
                     }
@@ -4406,7 +4550,8 @@ fn emit_inst(
                         | LowType::Dyn
                         | LowType::Closure
                         | LowType::Task
-                        | LowType::MixedList => s.push_str(&format!("  ret i8* {}\n", v)),
+                        | LowType::MixedList
+                        | LowType::F64List => s.push_str(&format!("  ret i8* {}\n", v)),
                         LowType::F64 => s.push_str(&format!("  ret double {}\n", v)),
                         LowType::I64 | LowType::Bool => s.push_str(&format!("  ret i64 {}\n", v)),
                     }
@@ -4426,7 +4571,8 @@ fn emit_inst(
                     | LowType::Dyn
                     | LowType::Closure
                     | LowType::Task
-                    | LowType::MixedList => s.push_str("  ret i8* null\n"),
+                    | LowType::MixedList
+                    | LowType::F64List => s.push_str("  ret i8* null\n"),
                     LowType::F64 => s.push_str("  ret double 0.0\n"),
                     LowType::I64 | LowType::Bool => s.push_str("  ret i64 0\n"),
                 }
@@ -4500,7 +4646,8 @@ fn store_reg_value(s: &mut String, reg: crate::ir::inst::Reg, value: &str, ty: L
         | LowType::Dyn
         | LowType::Closure
         | LowType::Task
-        | LowType::MixedList => {
+        | LowType::MixedList
+        | LowType::F64List => {
             s.push_str(&format!("  store i8* {}, i8** {}\n", value, dst));
         }
     }
@@ -4624,7 +4771,7 @@ fn box_value(s: &mut String, tmp: &mut u32, value: &str, ty: LowType) -> Result<
         LowType::Bool => s.push_str(&format!("  {} = call i8* @obo_box_bool(i64 {})\n", out, value)),
         LowType::F64 => s.push_str(&format!("  {} = call i8* @obo_box_f64(double {})\n", out, value)),
         LowType::Str => s.push_str(&format!("  {} = call i8* @obo_box_str(i8* {})\n", out, value)),
-        LowType::List | LowType::MixedList => {
+        LowType::List | LowType::MixedList | LowType::F64List => {
             s.push_str(&format!("  {} = call i8* @obo_box_list(i8* {})\n", out, value))
         }
         LowType::Map => s.push_str(&format!("  {} = call i8* @obo_box_map(i8* {})\n", out, value)),
@@ -4708,7 +4855,8 @@ fn emit_operand(
                 | LowType::Dyn
                 | LowType::Closure
                 | LowType::Task
-                | LowType::MixedList => {
+                | LowType::MixedList
+                | LowType::F64List => {
                     s.push_str(&format!("  {} = load i8*, i8** {}\n", name, ptr));
                 }
             }

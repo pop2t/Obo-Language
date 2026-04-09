@@ -1,0 +1,23 @@
+// Test typed f64 list operations
+function main()
+{
+    items = [];
+    items = items.add(1.5);
+    items = items.add(2.5);
+    items = items.add(3.0);
+
+    show items.count;
+    show items[0];
+    show items[1];
+    show items[2];
+
+    // Test SetIndex  
+    items[1] = 10.5;
+    show items[1];
+
+    // Test MakeList with literal f64 values
+    nums = [1.0, 2.0, 3.0, 4.0, 5.0];
+    show nums.count;
+    show nums[0];
+    show nums[4];
+}

@@ -279,6 +279,8 @@ pub enum IrParamType {
     Closure,
     /// Opaque task handle (`i8*`)
     Task,
+    /// Typed f64 list (`i8*`)
+    F64List,
 }
 
 impl IrParamType {
@@ -293,6 +295,7 @@ impl IrParamType {
                 | IrParamType::Dyn
                 | IrParamType::Closure
                 | IrParamType::Task
+                | IrParamType::F64List
         )
     }
 }

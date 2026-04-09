@@ -27,6 +27,8 @@ pub enum LowType {
     Task,
     /// Opaque mixed list (OboMixedList*; i8*)
     MixedList,
+    /// Typed f64 list (OboF64List*; i8*) — contiguous double array, no tags
+    F64List,
 }
 
 impl LowType {
@@ -34,11 +36,11 @@ impl LowType {
         match self {
             LowType::I64 | LowType::Bool => "i64",
             LowType::F64 => "double",
-            LowType::Str | LowType::List | LowType::Map | LowType::Entity | LowType::Dyn | LowType::Closure | LowType::Task | LowType::MixedList => "i8*",
+            LowType::Str | LowType::List | LowType::Map | LowType::Entity | LowType::Dyn | LowType::Closure | LowType::Task | LowType::MixedList | LowType::F64List => "i8*",
         }
     }
     pub fn is_ptr(&self) -> bool {
-        matches!(self, LowType::Str | LowType::List | LowType::Map | LowType::Entity | LowType::Dyn | LowType::Closure | LowType::Task | LowType::MixedList)
+        matches!(self, LowType::Str | LowType::List | LowType::Map | LowType::Entity | LowType::Dyn | LowType::Closure | LowType::Task | LowType::MixedList | LowType::F64List)
     }
 }
 
@@ -157,6 +159,7 @@ impl From<IrParamType> for LowType {
             IrParamType::F64 => LowType::F64,
             IrParamType::Closure => LowType::Closure,
             IrParamType::Task => LowType::Task,
+            IrParamType::F64List => LowType::F64List,
         }
     }
 }
@@ -202,7 +205,11 @@ fn infer_call_method_type(
         Some(LowType::List) => match method {
             "add" => {
                 if wants_mixed_list(args, reg_ty, var_ty) {
-                    LowType::MixedList
+                    if first_arg_ty(args, reg_ty, var_ty) == Some(LowType::F64) {
+                        LowType::F64List
+                    } else {
+                        LowType::MixedList
+                    }
                 } else {
                     LowType::List
                 }
@@ -219,6 +226,16 @@ fn infer_call_method_type(
             "reduce" => LowType::Dyn,
             "each" => LowType::I64,
             _ => ext_ret.unwrap_or(LowType::MixedList),
+        },
+        Some(LowType::F64List) => match method {
+            "add" => LowType::F64List,
+            "contains" | "any" | "all" | "empty" => LowType::Bool,
+            "length" | "count" => LowType::I64,
+            "filter" | "map" | "removeAt" | "sort" | "reverse" | "take" | "skip" | "slice" => LowType::F64List,
+            "reduce" => LowType::F64,
+            "join" => LowType::Str,
+            "each" => LowType::I64,
+            _ => ext_ret.unwrap_or(LowType::F64List),
         },
         Some(LowType::Map) => match method {
             "has" | "empty" => LowType::Bool,
@@ -464,6 +481,10 @@ fn infer_function_types_inner(
         var_ty.insert(p.clone(), low);
     }
 
+    // Run the forward pass twice so that types upgraded late in the first pass
+    // (e.g. List → F64List via .add(1.0) writeback) are visible to earlier uses
+    // (e.g. Load) on the second pass.
+    for _fwd_iter in 0..2 {
     for block in &func.blocks {
         for inst in &block.insts {
             match inst {
@@ -569,7 +590,15 @@ fn infer_function_types_inner(
                 }
                 Inst::Store(name, op) => {
                     if let Some(t) = operand_ty(op, &reg_ty, &var_ty) {
-                        var_ty.insert(name.clone(), t);
+                        // Don't narrow a wider type (F64List, MixedList) back to List.
+                        let dominated = matches!(
+                            (var_ty.get(name).copied(), t),
+                            (Some(LowType::F64List), LowType::List)
+                            | (Some(LowType::MixedList), LowType::List)
+                        );
+                        if !dominated {
+                            var_ty.insert(name.clone(), t);
+                        }
                     }
                     // Propagate entity type name through Store.
                     if let Operand::Reg(src) = op {
@@ -592,6 +621,7 @@ fn infer_function_types_inner(
                 }
                 Inst::CallMethod(r, obj, method, args) => {
                     let ot = operand_ty(obj, &reg_ty, &var_ty);
+
                     // Value-type methods: dot returns F64, length returns I64
                     if ot == Some(LowType::Entity) {
                         let vt_name = if let Operand::Reg(reg) = obj {
@@ -637,6 +667,13 @@ fn infer_function_types_inner(
                             _ => LowType::Dyn,
                         };
                         set_reg(&mut reg_ty, *r, t);
+                    } else if ot == Some(LowType::F64List) {
+                        let t = match name.as_str() {
+                            "count" | "length" => LowType::I64,
+                            "empty" => LowType::Bool,
+                            _ => LowType::F64,
+                        };
+                        set_reg(&mut reg_ty, *r, t);
                     } else if name == "count" || name == "length" || name == "empty" {
                         if name == "empty" {
                             set_reg(&mut reg_ty, *r, LowType::Bool);
@@ -666,14 +703,19 @@ fn infer_function_types_inner(
                 }
                 Inst::MakeList(r, els) => {
                     let mut has_non_i64 = false;
+                    let mut all_f64 = !els.is_empty();
                     for e in els {
                         let et = operand_ty(e, &reg_ty, &var_ty);
                         if matches!(et, Some(t) if t != LowType::I64 && t != LowType::Bool) {
                             has_non_i64 = true;
-                            break;
+                        }
+                        if !matches!(et, Some(LowType::F64)) {
+                            all_f64 = false;
                         }
                     }
-                    if has_non_i64 {
+                    if all_f64 {
+                        set_reg(&mut reg_ty, *r, LowType::F64List);
+                    } else if has_non_i64 {
                         set_reg(&mut reg_ty, *r, LowType::MixedList);
                         // Track homogeneous entity lists for typed-array optimization.
                         let mut common_entity: Option<String> = None;
@@ -731,6 +773,21 @@ fn infer_function_types_inner(
                 | Inst::Return(_)
                 | Inst::Nop
                 | Inst::InlineAsm(_, _, _, _) => {}
+            }
+        }
+    }
+    } // end forward pass iteration
+
+    // Backward propagation: if a variable ends as F64List but the MakeList register
+    // is still List, upgrade the register so the emission allocates the right type.
+    for block in &func.blocks {
+        for inst in &block.insts {
+            if let Inst::Store(name, Operand::Reg(src)) = inst {
+                if var_ty.get(name).copied() == Some(LowType::F64List) {
+                    if reg_ty.get(src.0 as usize).and_then(|t| *t) == Some(LowType::List) {
+                        set_reg(&mut reg_ty, *src, LowType::F64List);
+                    }
+                }
             }
         }
     }
@@ -823,6 +880,8 @@ fn infer_function_types_inner(
                     let ot = operand_ty(obj, &reg_ty, &var_ty);
                     if ot == Some(LowType::List) {
                         set_reg(&mut reg_ty, *r, LowType::I64);
+                    } else if ot == Some(LowType::F64List) {
+                        set_reg(&mut reg_ty, *r, LowType::F64);
                     } else if ot == Some(LowType::MixedList) {
                         // Typed-array optimization: if list has known entity element type,
                         // the indexed element is Entity (not Dyn).
@@ -884,17 +943,22 @@ fn infer_function_types_inner(
                 }
                 if let Inst::MakeList(r, els) = inst {
                     let mut has_non_i64 = false;
+                    let mut all_f64 = !els.is_empty();
                     for e in els {
                         let et = operand_ty(e, &reg_ty, &var_ty);
                         if matches!(et, Some(t) if t != LowType::I64 && t != LowType::Bool) {
                             has_non_i64 = true;
-                            break;
+                        }
+                        if !matches!(et, Some(LowType::F64)) {
+                            all_f64 = false;
                         }
                     }
                     set_reg(
                         &mut reg_ty,
                         *r,
-                        if has_non_i64 {
+                        if all_f64 {
+                            LowType::F64List
+                        } else if has_non_i64 {
                             LowType::MixedList
                         } else {
                             LowType::List
@@ -905,14 +969,17 @@ fn infer_function_types_inner(
                 // a specific type is called on a default-I64, upgrade the object.
                 if let Inst::CallMethod(_r, obj, method, _args) = inst {
                     let ot = operand_ty(obj, &reg_ty, &var_ty);
-                    if ot == Some(LowType::List)
+                    if (ot == Some(LowType::List) || ot == Some(LowType::F64List))
                         && method == "add"
                         && wants_mixed_list(_args, &reg_ty, &var_ty)
                     {
+                        // Check if the argument is specifically F64
+                        let arg_is_f64 = first_arg_ty(_args, &reg_ty, &var_ty) == Some(LowType::F64);
+                        let target = if arg_is_f64 { LowType::F64List } else { LowType::MixedList };
                         if let Operand::Reg(reg) = obj {
-                            set_reg(&mut reg_ty, *reg, LowType::MixedList);
+                            set_reg(&mut reg_ty, *reg, target);
                             if let Some(name) = reg_source_var.get(reg).cloned() {
-                                var_ty.insert(name, LowType::MixedList);
+                                var_ty.insert(name.clone(), target);
                             }
                         }
                     }

@@ -195,6 +195,7 @@ void obo_arena_register(void* ptr);
 #define OBO_GC_TASK 7
 #define OBO_GC_OPAQUE 8
 #define OBO_GC_ENTITY_SLOTTED 9
+#define OBO_GC_LIST_F64 10
 /* GC node definition (moved early so list/map realloc can update GC pointers) */
 typedef struct GCNode {
     void* ptr;
@@ -207,6 +208,16 @@ static GCNode* __obo_gc_head = NULL;
 static int64_t __obo_gc_alloc_count = 0;
 static int64_t __obo_gc_threshold = 256;
 static int __obo_gc_paused = 0;
+
+/* ── Thread safety: GC mutex ── */
+static pthread_mutex_t __obo_gc_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Protect the pending tasks linked list */
+static pthread_mutex_t __obo_task_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Fast-path: skip locking when no threads have been spawned */
+static int __obo_threaded = 0;
+
+static inline void obo_gc_lock(void)   { if (__builtin_expect(__obo_threaded, 0)) pthread_mutex_lock(&__obo_gc_mutex); }
+static inline void obo_gc_unlock(void) { if (__builtin_expect(__obo_threaded, 0)) pthread_mutex_unlock(&__obo_gc_mutex); }
 
 /* ── GCNode pool: avoid per-node malloc ── */
 #define GC_NODE_CHUNK 4096
@@ -2074,6 +2085,73 @@ char* __text_split(const char* s, const char* sep) {
     return obo_gc_track_string(s ? strdup(s) : strdup(""));
 }
 
+/* --- F64 List (double elements; typed array) --- */
+typedef struct {
+    int64_t len;
+    int64_t cap;
+    double items[];
+} OboF64List;
+
+static OboF64List* obo_alloc_f64_list(int64_t cap) {
+    if (cap < 0) return NULL;
+    OboF64List* list = (OboF64List*)malloc(sizeof(OboF64List) + (size_t)cap * sizeof(double));
+    if (!list) return NULL;
+    list->len = 0;
+    list->cap = cap;
+    obo_gc_register_impl(list, OBO_GC_LIST_F64);
+    return list;
+}
+
+void* obo_f64_list_new(int64_t len, double* data) {
+    if (len < 0) return NULL;
+    OboF64List* p = obo_alloc_f64_list(len < 8 ? 8 : len);
+    if (!p) return NULL;
+    p->len = len;
+    if (len > 0 && data) {
+        memcpy(p->items, data, (size_t)len * sizeof(double));
+    }
+    return p;
+}
+
+void* obo_f64_list_add(void* p, double val) {
+    OboF64List* L = (OboF64List*)p;
+    int64_t old_len = L ? L->len : 0;
+    int64_t new_len = old_len + 1;
+    OboF64List* N;
+    if (L && new_len <= L->cap) {
+        N = L;
+    } else {
+        int64_t new_cap = new_len < 8 ? 8 : new_len * 2;
+        N = (OboF64List*)malloc(sizeof(OboF64List) + (size_t)new_cap * sizeof(double));
+        if (!N) return NULL;
+        if (L && old_len > 0) {
+            memcpy(N->items, L->items, (size_t)old_len * sizeof(double));
+        }
+        N->cap = new_cap;
+        obo_gc_register_impl(N, OBO_GC_LIST_F64);
+    }
+    N->items[old_len] = val;
+    N->len = new_len;
+    return N;
+}
+
+double obo_f64_list_get(void* p, int64_t idx) {
+    OboF64List* L = (OboF64List*)p;
+    if (!L || idx < 0 || idx >= L->len) return 0.0;
+    return L->items[idx];
+}
+
+void obo_f64_list_set(void* p, int64_t idx, double val) {
+    OboF64List* L = (OboF64List*)p;
+    if (!L || idx < 0 || idx >= L->len) return;
+    L->items[idx] = val;
+}
+
+int64_t obo_f64_list_length(void* p) {
+    OboF64List* L = (OboF64List*)p;
+    return L ? L->len : 0;
+}
+
 /* --- List methods (native stubs) --- */
 void* obo_list_add(void* p, int64_t val) {
     OboList* L = (OboList*)p;
@@ -2561,6 +2639,9 @@ void* obo_range(int64_t start, int64_t end, int64_t step) {
 /* --- GC continued: root stack, collection --- */
 
 /* Shadow stack for GC roots (pointers to stack slots holding heap refs) */
+/* Thread-local so each thread has its own root stack. The GC mark phase
+   must scan all thread root stacks — currently only the main thread's
+   stack is used for marking (spawned tasks are short-lived closures). */
 #define OBO_GC_ROOT_STACK_SIZE 4096
 static void** __obo_gc_roots[OBO_GC_ROOT_STACK_SIZE];
 static int64_t __obo_gc_root_top = 0;
@@ -3109,6 +3190,7 @@ static void gc_mark_phase(void) {
             }
             case OBO_GC_STRING:
             case OBO_GC_LIST_I64:
+            case OBO_GC_LIST_F64:
             case OBO_GC_CLOSURE:
             case OBO_GC_OPAQUE:
             default:
@@ -3143,6 +3225,7 @@ static void gc_free_object(GCNode* node) {
             free(p);
             break;
         case OBO_GC_LIST_I64:
+        case OBO_GC_LIST_F64:
             free(p);
             break;
         case OBO_GC_MAP: {
@@ -3224,8 +3307,9 @@ static void obo_gc_register_impl(void* ptr, int kind) {
     if (!ptr) return;
     /* In no-gc mode (paused), skip registration entirely — allocations freed at exit. */
     if (__obo_gc_paused) return;
+    obo_gc_lock();
     GCNode* n = gc_node_alloc();
-    if (!n) return;
+    if (!n) { obo_gc_unlock(); return; }
     n->ptr = ptr;
     n->mark = 1;
     n->kind = (uint8_t)kind;
@@ -3237,12 +3321,13 @@ static void obo_gc_register_impl(void* ptr, int kind) {
     n->ht_next = __obo_gc_ht[h];
     __obo_gc_ht[h] = n;
     __obo_gc_alloc_count++;
-    if (!__obo_gc_paused && __obo_gc_alloc_count > __obo_gc_threshold) {
+    if (__obo_gc_alloc_count > __obo_gc_threshold) {
         obo_gc_collect();
         if (__obo_gc_alloc_count > __obo_gc_threshold / 2) {
             __obo_gc_threshold *= 2;
         }
     }
+    obo_gc_unlock();
 }
 
 /* Unknown / legacy allocations — no interior pointers (conservative) */
@@ -3420,12 +3505,15 @@ static void* obo_task_thread_fn(void* arg) {
 }
 
 void* obo_task_spawn(void* closure) {
+    __obo_threaded = 1;  /* Enable mutex locking from now on */
     OboTask* task = (OboTask*)malloc(sizeof(OboTask));
     if (!task) return NULL;
     task->closure = closure;
     task->joined = 0;
+    pthread_mutex_lock(&__obo_task_mutex);
     task->next_pending = __obo_pending_tasks;
     __obo_pending_tasks = task;
+    pthread_mutex_unlock(&__obo_task_mutex);
     obo_gc_register_impl(task, OBO_GC_TASK);
     pthread_create(&task->thread, NULL, obo_task_thread_fn, task);
     return task;

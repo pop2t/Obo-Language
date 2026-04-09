@@ -1,0 +1,28 @@
+function worker(id, n) {
+    result = [];
+    count(i = 0, n) {
+        result.add(id * 1000 + i);
+    }
+    show "Worker " + id + " done: " + result.count + " items";
+    out result.count;
+}
+
+function main() {
+    show "Starting 4 workers...";
+    
+    t1 = run action() {
+        worker(1, 5000);
+    };
+    t2 = run action() {
+        worker(2, 5000);
+    };
+    t3 = run action() {
+        worker(3, 5000);
+    };
+    t4 = run action() {
+        worker(4, 5000);
+    };
+    
+    wait for all;
+    show "All workers completed!";
+}

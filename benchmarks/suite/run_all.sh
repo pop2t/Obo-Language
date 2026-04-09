@@ -2,7 +2,7 @@
 # ═══════════════════════════════════════════════════════════════════
 # OBO Benchmark Suite — hyperfine-based cross-language comparison
 # Benchmarks: fibonacci, binary_trees, nbody, map_stress, database_heavy
-# Languages:  OBO Native (LLVM), OBO Interpreter, Python 3, C# (.NET 8), Node.js, C++
+# Languages:  OBO Native (LLVM), OBO Interpreter, C# (.NET 8), Node.js, C++, Rust
 # ═══════════════════════════════════════════════════════════════════
 
 set -e
@@ -29,10 +29,9 @@ echo ""
 
 # ── Detect available toolchains ──────────────────────────
 
-HAS_OBO=0; HAS_PYTHON=0; HAS_CSHARP=0; HAS_NODE=0; HAS_CPP=0; HAS_RUST=0; HAS_HYPERFINE=0
+HAS_OBO=0; HAS_CSHARP=0; HAS_NODE=0; HAS_CPP=0; HAS_RUST=0; HAS_HYPERFINE=0
 
 command -v obo &>/dev/null && HAS_OBO=1
-command -v python3 &>/dev/null && HAS_PYTHON=1
 command -v dotnet &>/dev/null && HAS_CSHARP=1
 command -v node &>/dev/null && HAS_NODE=1
 command -v g++ &>/dev/null && HAS_CPP=1
@@ -41,7 +40,6 @@ command -v hyperfine &>/dev/null && HAS_HYPERFINE=1
 
 echo -e "${CYAN}Toolchain check:${NC}"
 [ "$HAS_OBO" = "1" ] && echo -e "  obo:       ${GREEN}$(obo --version 2>&1 | head -1 || echo 'OK')${NC}" || echo -e "  obo:       ${RED}not found${NC}"
-[ "$HAS_PYTHON" = "1" ] && echo -e "  python3:   ${GREEN}$(python3 --version 2>&1)${NC}" || echo -e "  python3:   ${RED}not found${NC}"
 [ "$HAS_CSHARP" = "1" ] && echo -e "  dotnet:    ${GREEN}.NET $(dotnet --version 2>&1)${NC}" || echo -e "  dotnet:    ${RED}not found${NC}"
 [ "$HAS_NODE" = "1" ] && echo -e "  node:      ${GREEN}$(node --version 2>&1)${NC}" || echo -e "  node:      ${RED}not found${NC}"
 [ "$HAS_CPP" = "1" ] && echo -e "  g++:       ${GREEN}$(g++ --version 2>&1 | head -1)${NC}" || echo -e "  g++:       ${RED}not found${NC}"
@@ -178,11 +176,6 @@ run_benchmark() {
     if [ "$HAS_OBO" = "1" ] && [ "${SKIP_INTERP:-0}" = "0" ]; then
         cmds+=("obo run $bench_dir/bench.obo")
         names+=("OBO Interp")
-    fi
-
-    if [ "$HAS_PYTHON" = "1" ]; then
-        cmds+=("python3 $bench_dir/bench.py")
-        names+=("Python 3")
     fi
 
     if [ "$HAS_CSHARP" = "1" ] && [ -d "$bench_dir/csharp" ]; then

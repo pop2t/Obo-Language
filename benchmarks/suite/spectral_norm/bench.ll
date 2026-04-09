@@ -206,6 +206,11 @@ declare i64 @__text_toNumber(i8*) nounwind readonly
 declare double @__text_toDecimal(i8*) nounwind readonly
 declare i8* @__text_split(i8*, i8*) nounwind
 declare i8* @obo_list_add(i8*, i64) nounwind
+declare i8* @obo_f64_list_new(i64, double*) nounwind
+declare i8* @obo_f64_list_add(i8*, double) nounwind
+declare double @obo_f64_list_get(i8*, i64) nounwind readonly
+declare void @obo_f64_list_set(i8*, i64, double) nounwind
+declare i64 @obo_f64_list_length(i8*) nounwind readonly
 declare i64 @obo_list_first(i8*) nounwind readonly
 declare i64 @obo_list_last(i8*) nounwind readonly
 declare i64 @obo_list_empty(i8*) nounwind readonly
@@ -342,8 +347,8 @@ entry:
   %reg_12_ptr = alloca i64
   %reg_13_ptr = alloca i64
   %reg_14_ptr = alloca double
-  %var_j_ptr = alloca i64
   %var_i_ptr = alloca i64
+  %var_j_ptr = alloca i64
   store i64 %arg0, i64* %reg_0_ptr
   store i64 %arg1, i64* %reg_1_ptr
   %t0 = load i64, i64* %reg_0_ptr
@@ -374,7 +379,7 @@ entry:
   %t16 = mul i64 %t14, %t15
   store i64 %t16, i64* %reg_9_ptr
   %t17 = load i64, i64* %reg_9_ptr
-  %t18 = call i64 @obo_safe_div(i64 %t17, i64 2)
+  %t18 = sdiv i64 %t17, 2
   store i64 %t18, i64* %reg_10_ptr
   %t19 = load i64, i64* %var_i_ptr
   store i64 %t19, i64* %reg_11_ptr
@@ -387,7 +392,7 @@ entry:
   store i64 %t24, i64* %reg_13_ptr
   %t25 = load i64, i64* %reg_13_ptr
   %t26 = sitofp i64 %t25 to double
-  %t27 = fdiv contract double 0x3FF0000000000000, %t26
+  %t27 = fdiv reassoc contract double 0x3FF0000000000000, %t26
   store double %t27, double* %reg_14_ptr
   %t28 = load double, double* %reg_14_ptr
   ret double %t28
@@ -412,7 +417,7 @@ entry:
   %reg_14_ptr = alloca double
   %reg_15_ptr = alloca i8*
   %reg_16_ptr = alloca i64
-  %reg_17_ptr = alloca i8*
+  %reg_17_ptr = alloca double
   %reg_18_ptr = alloca double
   %reg_19_ptr = alloca double
   %reg_20_ptr = alloca i64
@@ -424,23 +429,16 @@ entry:
   %reg_26_ptr = alloca i64
   %var_u_ptr = alloca i8*
   %var_au_ptr = alloca i8*
-  %var_i_ptr = alloca i64
+  %var_n_ptr = alloca i64
   %var_sum_ptr = alloca double
   %var_j_ptr = alloca i64
-  %var_n_ptr = alloca i64
+  %var_i_ptr = alloca i64
   store i8* %arg0, i8** %reg_0_ptr
   store i64 %arg1, i64* %reg_1_ptr
   store i8* %arg2, i8** %reg_2_ptr
-  %gc_root_arr = alloca i8**, i64 4
-  %gc_root_gep_0 = getelementptr i8**, i8*** %gc_root_arr, i64 0
-  store i8** %reg_15_ptr, i8*** %gc_root_gep_0
-  %gc_root_gep_1 = getelementptr i8**, i8*** %gc_root_arr, i64 1
-  store i8** %reg_17_ptr, i8*** %gc_root_gep_1
-  %gc_root_gep_2 = getelementptr i8**, i8*** %gc_root_arr, i64 2
-  store i8** %var_u_ptr, i8*** %gc_root_gep_2
-  %gc_root_gep_3 = getelementptr i8**, i8*** %gc_root_arr, i64 3
-  store i8** %var_au_ptr, i8*** %gc_root_gep_3
-  call void @obo_gc_push_roots_bulk(i8*** %gc_root_arr, i64 4)
+  call void @obo_gc_push_root(i8** %reg_15_ptr)
+  call void @obo_gc_push_root(i8** %var_u_ptr)
+  call void @obo_gc_push_root(i8** %var_au_ptr)
   %t0 = load i8*, i8** %reg_0_ptr
   store i8* %t0, i8** %var_u_ptr
   %t1 = load i64, i64* %reg_1_ptr
@@ -483,7 +481,7 @@ eval_A_times_u_b3:
   store i64 %t18, i64* %var_i_ptr
   br label %eval_A_times_u_b1
 eval_A_times_u_b4:
-  call void @obo_gc_pop_roots(i64 4)
+  call void @obo_gc_pop_roots(i64 3)
   ret i64 0
 eval_A_times_u_b5:
   %t19 = load i64, i64* %var_j_ptr
@@ -515,53 +513,48 @@ eval_A_times_u_b6:
   store i64 %t35, i64* %reg_16_ptr
   %t36 = load i8*, i8** %reg_15_ptr
   %t37 = load i64, i64* %reg_16_ptr
-  %t38 = mul i64 %t37, 16
+  %t38 = mul i64 %t37, 8
   %t39 = add i64 %t38, 16
   %t40 = getelementptr i8, i8* %t36, i64 %t39
-  store i8* %t40, i8** %reg_17_ptr
-  %t41 = load double, double* %reg_14_ptr
-  %t42 = load i8*, i8** %reg_17_ptr
-  %t44 = getelementptr i8, i8* %t42, i64 0
-  %t45 = bitcast i8* %t44 to i64*
-  %t46 = load i64, i64* %t45
-  %t47 = getelementptr i8, i8* %t42, i64 8
-  %t48 = bitcast i8* %t47 to i64*
-  %t49 = load i64, i64* %t48
-  %t50 = icmp eq i64 %t46, 5
-  %t51 = bitcast i64 %t49 to double
-  %t52 = sitofp i64 %t49 to double
-  %t43 = select i1 %t50, double %t51, double %t52
-  %t53 = fmul contract double %t41, %t43
-  store double %t53, double* %reg_18_ptr
-  %t54 = load double, double* %reg_11_ptr
-  %t55 = load double, double* %reg_18_ptr
-  %t56 = fadd contract double %t54, %t55
-  store double %t56, double* %reg_19_ptr
-  %t57 = load double, double* %reg_19_ptr
-  store double %t57, double* %var_sum_ptr
+  %t41 = bitcast i8* %t40 to double*
+  %t42 = load double, double* %t41
+  store double %t42, double* %reg_17_ptr
+  %t43 = load double, double* %reg_14_ptr
+  %t44 = load double, double* %reg_17_ptr
+  %t45 = fmul reassoc contract double %t43, %t44
+  store double %t45, double* %reg_18_ptr
+  %t46 = load double, double* %reg_11_ptr
+  %t47 = load double, double* %reg_18_ptr
+  %t48 = fadd reassoc contract double %t46, %t47
+  store double %t48, double* %reg_19_ptr
+  %t49 = load double, double* %reg_19_ptr
+  store double %t49, double* %var_sum_ptr
   br label %eval_A_times_u_b7
 eval_A_times_u_b7:
-  %t58 = load i64, i64* %var_j_ptr
-  store i64 %t58, i64* %reg_20_ptr
-  %t59 = load i64, i64* %reg_20_ptr
-  %t60 = load i64, i64* %reg_8_ptr
-  %t61 = add i64 %t59, %t60
-  store i64 %t61, i64* %reg_21_ptr
-  %t62 = load i64, i64* %reg_21_ptr
-  store i64 %t62, i64* %var_j_ptr
+  %t50 = load i64, i64* %var_j_ptr
+  store i64 %t50, i64* %reg_20_ptr
+  %t51 = load i64, i64* %reg_20_ptr
+  %t52 = load i64, i64* %reg_8_ptr
+  %t53 = add i64 %t51, %t52
+  store i64 %t53, i64* %reg_21_ptr
+  %t54 = load i64, i64* %reg_21_ptr
+  store i64 %t54, i64* %var_j_ptr
   br label %eval_A_times_u_b5
 eval_A_times_u_b8:
-  %t63 = load double, double* %var_sum_ptr
-  store double %t63, double* %reg_22_ptr
-  %t64 = load i8*, i8** %var_au_ptr
-  store i8* %t64, i8** %reg_23_ptr
-  %t65 = load i64, i64* %var_i_ptr
-  store i64 %t65, i64* %reg_24_ptr
-  %t66 = load i8*, i8** %reg_23_ptr
-  %t67 = load i64, i64* %reg_24_ptr
-  %t68 = load double, double* %reg_22_ptr
-  %t69 = call i8* @obo_box_f64(double %t68)
-  call void @obo_mixed_list_set(i8* %t66, i64 %t67, i8* %t69)
+  %t55 = load double, double* %var_sum_ptr
+  store double %t55, double* %reg_22_ptr
+  %t56 = load i8*, i8** %var_au_ptr
+  store i8* %t56, i8** %reg_23_ptr
+  %t57 = load i64, i64* %var_i_ptr
+  store i64 %t57, i64* %reg_24_ptr
+  %t58 = load i8*, i8** %reg_23_ptr
+  %t59 = load i64, i64* %reg_24_ptr
+  %t60 = load double, double* %reg_22_ptr
+  %t61 = mul i64 %t59, 8
+  %t62 = add i64 %t61, 16
+  %t63 = getelementptr i8, i8* %t58, i64 %t62
+  %t64 = bitcast i8* %t63 to double*
+  store double %t60, double* %t64
   br label %eval_A_times_u_b3
 }
 
@@ -584,7 +577,7 @@ entry:
   %reg_14_ptr = alloca double
   %reg_15_ptr = alloca i8*
   %reg_16_ptr = alloca i64
-  %reg_17_ptr = alloca i8*
+  %reg_17_ptr = alloca double
   %reg_18_ptr = alloca double
   %reg_19_ptr = alloca double
   %reg_20_ptr = alloca i64
@@ -595,24 +588,17 @@ entry:
   %reg_25_ptr = alloca i64
   %reg_26_ptr = alloca i64
   %var_atu_ptr = alloca i8*
-  %var_j_ptr = alloca i64
+  %var_u_ptr = alloca i8*
   %var_n_ptr = alloca i64
   %var_i_ptr = alloca i64
   %var_sum_ptr = alloca double
-  %var_u_ptr = alloca i8*
+  %var_j_ptr = alloca i64
   store i8* %arg0, i8** %reg_0_ptr
   store i64 %arg1, i64* %reg_1_ptr
   store i8* %arg2, i8** %reg_2_ptr
-  %gc_root_arr = alloca i8**, i64 4
-  %gc_root_gep_0 = getelementptr i8**, i8*** %gc_root_arr, i64 0
-  store i8** %reg_15_ptr, i8*** %gc_root_gep_0
-  %gc_root_gep_1 = getelementptr i8**, i8*** %gc_root_arr, i64 1
-  store i8** %reg_17_ptr, i8*** %gc_root_gep_1
-  %gc_root_gep_2 = getelementptr i8**, i8*** %gc_root_arr, i64 2
-  store i8** %var_atu_ptr, i8*** %gc_root_gep_2
-  %gc_root_gep_3 = getelementptr i8**, i8*** %gc_root_arr, i64 3
-  store i8** %var_u_ptr, i8*** %gc_root_gep_3
-  call void @obo_gc_push_roots_bulk(i8*** %gc_root_arr, i64 4)
+  call void @obo_gc_push_root(i8** %reg_15_ptr)
+  call void @obo_gc_push_root(i8** %var_atu_ptr)
+  call void @obo_gc_push_root(i8** %var_u_ptr)
   %t0 = load i8*, i8** %reg_0_ptr
   store i8* %t0, i8** %var_u_ptr
   %t1 = load i64, i64* %reg_1_ptr
@@ -655,7 +641,7 @@ eval_At_times_u_b3:
   store i64 %t18, i64* %var_i_ptr
   br label %eval_At_times_u_b1
 eval_At_times_u_b4:
-  call void @obo_gc_pop_roots(i64 4)
+  call void @obo_gc_pop_roots(i64 3)
   ret i64 0
 eval_At_times_u_b5:
   %t19 = load i64, i64* %var_j_ptr
@@ -687,53 +673,48 @@ eval_At_times_u_b6:
   store i64 %t35, i64* %reg_16_ptr
   %t36 = load i8*, i8** %reg_15_ptr
   %t37 = load i64, i64* %reg_16_ptr
-  %t38 = mul i64 %t37, 16
+  %t38 = mul i64 %t37, 8
   %t39 = add i64 %t38, 16
   %t40 = getelementptr i8, i8* %t36, i64 %t39
-  store i8* %t40, i8** %reg_17_ptr
-  %t41 = load double, double* %reg_14_ptr
-  %t42 = load i8*, i8** %reg_17_ptr
-  %t44 = getelementptr i8, i8* %t42, i64 0
-  %t45 = bitcast i8* %t44 to i64*
-  %t46 = load i64, i64* %t45
-  %t47 = getelementptr i8, i8* %t42, i64 8
-  %t48 = bitcast i8* %t47 to i64*
-  %t49 = load i64, i64* %t48
-  %t50 = icmp eq i64 %t46, 5
-  %t51 = bitcast i64 %t49 to double
-  %t52 = sitofp i64 %t49 to double
-  %t43 = select i1 %t50, double %t51, double %t52
-  %t53 = fmul contract double %t41, %t43
-  store double %t53, double* %reg_18_ptr
-  %t54 = load double, double* %reg_11_ptr
-  %t55 = load double, double* %reg_18_ptr
-  %t56 = fadd contract double %t54, %t55
-  store double %t56, double* %reg_19_ptr
-  %t57 = load double, double* %reg_19_ptr
-  store double %t57, double* %var_sum_ptr
+  %t41 = bitcast i8* %t40 to double*
+  %t42 = load double, double* %t41
+  store double %t42, double* %reg_17_ptr
+  %t43 = load double, double* %reg_14_ptr
+  %t44 = load double, double* %reg_17_ptr
+  %t45 = fmul reassoc contract double %t43, %t44
+  store double %t45, double* %reg_18_ptr
+  %t46 = load double, double* %reg_11_ptr
+  %t47 = load double, double* %reg_18_ptr
+  %t48 = fadd reassoc contract double %t46, %t47
+  store double %t48, double* %reg_19_ptr
+  %t49 = load double, double* %reg_19_ptr
+  store double %t49, double* %var_sum_ptr
   br label %eval_At_times_u_b7
 eval_At_times_u_b7:
-  %t58 = load i64, i64* %var_j_ptr
-  store i64 %t58, i64* %reg_20_ptr
-  %t59 = load i64, i64* %reg_20_ptr
-  %t60 = load i64, i64* %reg_8_ptr
-  %t61 = add i64 %t59, %t60
-  store i64 %t61, i64* %reg_21_ptr
-  %t62 = load i64, i64* %reg_21_ptr
-  store i64 %t62, i64* %var_j_ptr
+  %t50 = load i64, i64* %var_j_ptr
+  store i64 %t50, i64* %reg_20_ptr
+  %t51 = load i64, i64* %reg_20_ptr
+  %t52 = load i64, i64* %reg_8_ptr
+  %t53 = add i64 %t51, %t52
+  store i64 %t53, i64* %reg_21_ptr
+  %t54 = load i64, i64* %reg_21_ptr
+  store i64 %t54, i64* %var_j_ptr
   br label %eval_At_times_u_b5
 eval_At_times_u_b8:
-  %t63 = load double, double* %var_sum_ptr
-  store double %t63, double* %reg_22_ptr
-  %t64 = load i8*, i8** %var_atu_ptr
-  store i8* %t64, i8** %reg_23_ptr
-  %t65 = load i64, i64* %var_i_ptr
-  store i64 %t65, i64* %reg_24_ptr
-  %t66 = load i8*, i8** %reg_23_ptr
-  %t67 = load i64, i64* %reg_24_ptr
-  %t68 = load double, double* %reg_22_ptr
-  %t69 = call i8* @obo_box_f64(double %t68)
-  call void @obo_mixed_list_set(i8* %t66, i64 %t67, i8* %t69)
+  %t55 = load double, double* %var_sum_ptr
+  store double %t55, double* %reg_22_ptr
+  %t56 = load i8*, i8** %var_atu_ptr
+  store i8* %t56, i8** %reg_23_ptr
+  %t57 = load i64, i64* %var_i_ptr
+  store i64 %t57, i64* %reg_24_ptr
+  %t58 = load i8*, i8** %reg_23_ptr
+  %t59 = load i64, i64* %reg_24_ptr
+  %t60 = load double, double* %reg_22_ptr
+  %t61 = mul i64 %t59, 8
+  %t62 = add i64 %t61, 16
+  %t63 = getelementptr i8, i8* %t58, i64 %t62
+  %t64 = bitcast i8* %t63 to double*
+  store double %t60, double* %t64
   br label %eval_At_times_u_b3
 }
 
@@ -759,10 +740,10 @@ entry:
   %reg_17_ptr = alloca i64
   %reg_18_ptr = alloca i8*
   %reg_19_ptr = alloca i64
+  %var_u_ptr = alloca i8*
   %var_i_ptr = alloca i64
   %var_n_ptr = alloca i64
   %var_v_ptr = alloca i8*
-  %var_u_ptr = alloca i8*
   %var_atau_ptr = alloca i8*
   store i8* %arg0, i8** %reg_0_ptr
   store i64 %arg1, i64* %reg_1_ptr
@@ -775,9 +756,9 @@ entry:
   %gc_root_gep_2 = getelementptr i8**, i8*** %gc_root_arr, i64 2
   store i8** %reg_18_ptr, i8*** %gc_root_gep_2
   %gc_root_gep_3 = getelementptr i8**, i8*** %gc_root_arr, i64 3
-  store i8** %var_v_ptr, i8*** %gc_root_gep_3
+  store i8** %var_u_ptr, i8*** %gc_root_gep_3
   %gc_root_gep_4 = getelementptr i8**, i8*** %gc_root_arr, i64 4
-  store i8** %var_u_ptr, i8*** %gc_root_gep_4
+  store i8** %var_v_ptr, i8*** %gc_root_gep_4
   %gc_root_gep_5 = getelementptr i8**, i8*** %gc_root_arr, i64 5
   store i8** %var_atau_ptr, i8*** %gc_root_gep_5
   call void @obo_gc_push_roots_bulk(i8*** %gc_root_arr, i64 6)
@@ -813,45 +794,44 @@ eval_AtA_times_u_b2:
   %t15 = load i8*, i8** %var_v_ptr
   store i8* %t15, i8** %reg_8_ptr
   %t16 = load i8*, i8** %reg_8_ptr
-  %t17 = call i8* @obo_box_f64(double 0x0000000000000000)
-  %t18 = call i8* @obo_mixed_list_add(i8* %t16, i8* %t17)
-  store i8* %t18, i8** %reg_9_ptr
-  %t19 = load i8*, i8** %reg_9_ptr
-  store i8* %t19, i8** %var_v_ptr
+  %t17 = call i8* @obo_f64_list_add(i8* %t16, double 0x0000000000000000)
+  store i8* %t17, i8** %reg_9_ptr
+  %t18 = load i8*, i8** %reg_9_ptr
+  store i8* %t18, i8** %var_v_ptr
   br label %eval_AtA_times_u_b3
 eval_AtA_times_u_b3:
-  %t20 = load i64, i64* %var_i_ptr
-  store i64 %t20, i64* %reg_10_ptr
-  %t21 = load i64, i64* %reg_10_ptr
-  %t22 = load i64, i64* %reg_5_ptr
-  %t23 = add i64 %t21, %t22
-  store i64 %t23, i64* %reg_11_ptr
-  %t24 = load i64, i64* %reg_11_ptr
-  store i64 %t24, i64* %var_i_ptr
+  %t19 = load i64, i64* %var_i_ptr
+  store i64 %t19, i64* %reg_10_ptr
+  %t20 = load i64, i64* %reg_10_ptr
+  %t21 = load i64, i64* %reg_5_ptr
+  %t22 = add i64 %t20, %t21
+  store i64 %t22, i64* %reg_11_ptr
+  %t23 = load i64, i64* %reg_11_ptr
+  store i64 %t23, i64* %var_i_ptr
   br label %eval_AtA_times_u_b1
 eval_AtA_times_u_b4:
-  %t25 = load i8*, i8** %var_u_ptr
-  store i8* %t25, i8** %reg_12_ptr
-  %t26 = load i64, i64* %var_n_ptr
-  store i64 %t26, i64* %reg_13_ptr
-  %t27 = load i8*, i8** %var_v_ptr
-  store i8* %t27, i8** %reg_14_ptr
-  %t28 = load i8*, i8** %reg_12_ptr
-  %t29 = load i64, i64* %reg_13_ptr
-  %t30 = load i8*, i8** %reg_14_ptr
-  %t31 = call i64 @eval_A_times_u(i8* %t28, i64 %t29, i8* %t30)
-  store i64 %t31, i64* %reg_15_ptr
-  %t32 = load i8*, i8** %var_v_ptr
-  store i8* %t32, i8** %reg_16_ptr
-  %t33 = load i64, i64* %var_n_ptr
-  store i64 %t33, i64* %reg_17_ptr
-  %t34 = load i8*, i8** %var_atau_ptr
-  store i8* %t34, i8** %reg_18_ptr
-  %t35 = load i8*, i8** %reg_16_ptr
-  %t36 = load i64, i64* %reg_17_ptr
-  %t37 = load i8*, i8** %reg_18_ptr
-  %t38 = call i64 @eval_At_times_u(i8* %t35, i64 %t36, i8* %t37)
-  store i64 %t38, i64* %reg_19_ptr
+  %t24 = load i8*, i8** %var_u_ptr
+  store i8* %t24, i8** %reg_12_ptr
+  %t25 = load i64, i64* %var_n_ptr
+  store i64 %t25, i64* %reg_13_ptr
+  %t26 = load i8*, i8** %var_v_ptr
+  store i8* %t26, i8** %reg_14_ptr
+  %t27 = load i8*, i8** %reg_12_ptr
+  %t28 = load i64, i64* %reg_13_ptr
+  %t29 = load i8*, i8** %reg_14_ptr
+  %t30 = call i64 @eval_A_times_u(i8* %t27, i64 %t28, i8* %t29)
+  store i64 %t30, i64* %reg_15_ptr
+  %t31 = load i8*, i8** %var_v_ptr
+  store i8* %t31, i8** %reg_16_ptr
+  %t32 = load i64, i64* %var_n_ptr
+  store i64 %t32, i64* %reg_17_ptr
+  %t33 = load i8*, i8** %var_atau_ptr
+  store i8* %t33, i8** %reg_18_ptr
+  %t34 = load i8*, i8** %reg_16_ptr
+  %t35 = load i64, i64* %reg_17_ptr
+  %t36 = load i8*, i8** %reg_18_ptr
+  %t37 = call i64 @eval_At_times_u(i8* %t34, i64 %t35, i8* %t36)
+  store i64 %t37, i64* %reg_19_ptr
   call void @obo_gc_pop_roots(i64 6)
   ret i64 0
 }
@@ -891,20 +871,20 @@ entry:
   %reg_30_ptr = alloca double
   %reg_31_ptr = alloca i8*
   %reg_32_ptr = alloca i64
-  %reg_33_ptr = alloca i8*
+  %reg_33_ptr = alloca double
   %reg_34_ptr = alloca i8*
   %reg_35_ptr = alloca i64
-  %reg_36_ptr = alloca i8*
-  %reg_37_ptr = alloca i8*
+  %reg_36_ptr = alloca double
+  %reg_37_ptr = alloca double
   %reg_38_ptr = alloca double
   %reg_39_ptr = alloca double
   %reg_40_ptr = alloca i8*
   %reg_41_ptr = alloca i64
-  %reg_42_ptr = alloca i8*
+  %reg_42_ptr = alloca double
   %reg_43_ptr = alloca i8*
   %reg_44_ptr = alloca i64
-  %reg_45_ptr = alloca i8*
-  %reg_46_ptr = alloca i8*
+  %reg_45_ptr = alloca double
+  %reg_46_ptr = alloca double
   %reg_47_ptr = alloca double
   %reg_48_ptr = alloca i64
   %reg_49_ptr = alloca i64
@@ -914,13 +894,13 @@ entry:
   %reg_53_ptr = alloca double
   %reg_54_ptr = alloca double
   %reg_55_ptr = alloca i8*
+  %var_result_ptr = alloca double
   %var_vv_ptr = alloca double
-  %var_n_ptr = alloca i64
   %var_v_ptr = alloca i8*
   %var_u_ptr = alloca i8*
   %var_vBv_ptr = alloca double
-  %var_result_ptr = alloca double
   %var_i_ptr = alloca i64
+  %var_n_ptr = alloca i64
   %gc_root_arr = alloca i8**, i64 7
   %gc_root_gep_0 = getelementptr i8**, i8*** %gc_root_arr, i64 0
   store i8** %reg_7_ptr, i8*** %gc_root_gep_0
@@ -968,29 +948,27 @@ main_b2:
   %t14 = load i8*, i8** %var_u_ptr
   store i8* %t14, i8** %reg_6_ptr
   %t15 = load i8*, i8** %reg_6_ptr
-  %t16 = call i8* @obo_box_f64(double 0x3FF0000000000000)
-  %t17 = call i8* @obo_mixed_list_add(i8* %t15, i8* %t16)
-  store i8* %t17, i8** %reg_7_ptr
-  %t18 = load i8*, i8** %reg_7_ptr
-  store i8* %t18, i8** %var_u_ptr
-  %t19 = load i8*, i8** %var_v_ptr
-  store i8* %t19, i8** %reg_8_ptr
-  %t20 = load i8*, i8** %reg_8_ptr
-  %t21 = call i8* @obo_box_f64(double 0x0000000000000000)
-  %t22 = call i8* @obo_mixed_list_add(i8* %t20, i8* %t21)
-  store i8* %t22, i8** %reg_9_ptr
-  %t23 = load i8*, i8** %reg_9_ptr
-  store i8* %t23, i8** %var_v_ptr
+  %t16 = call i8* @obo_f64_list_add(i8* %t15, double 0x3FF0000000000000)
+  store i8* %t16, i8** %reg_7_ptr
+  %t17 = load i8*, i8** %reg_7_ptr
+  store i8* %t17, i8** %var_u_ptr
+  %t18 = load i8*, i8** %var_v_ptr
+  store i8* %t18, i8** %reg_8_ptr
+  %t19 = load i8*, i8** %reg_8_ptr
+  %t20 = call i8* @obo_f64_list_add(i8* %t19, double 0x0000000000000000)
+  store i8* %t20, i8** %reg_9_ptr
+  %t21 = load i8*, i8** %reg_9_ptr
+  store i8* %t21, i8** %var_v_ptr
   br label %main_b3
 main_b3:
-  %t24 = load i64, i64* %var_i_ptr
-  store i64 %t24, i64* %reg_10_ptr
-  %t25 = load i64, i64* %reg_10_ptr
-  %t26 = load i64, i64* %reg_3_ptr
-  %t27 = add i64 %t25, %t26
-  store i64 %t27, i64* %reg_11_ptr
-  %t28 = load i64, i64* %reg_11_ptr
-  store i64 %t28, i64* %var_i_ptr
+  %t22 = load i64, i64* %var_i_ptr
+  store i64 %t22, i64* %reg_10_ptr
+  %t23 = load i64, i64* %reg_10_ptr
+  %t24 = load i64, i64* %reg_3_ptr
+  %t25 = add i64 %t23, %t24
+  store i64 %t25, i64* %reg_11_ptr
+  %t26 = load i64, i64* %reg_11_ptr
+  store i64 %t26, i64* %var_i_ptr
   br label %main_b1
 main_b4:
   store i64 0, i64* %var_i_ptr
@@ -998,191 +976,179 @@ main_b4:
   store i64 1, i64* %reg_13_ptr
   br label %main_b5
 main_b5:
-  %t29 = load i64, i64* %var_i_ptr
-  store i64 %t29, i64* %reg_14_ptr
-  %t30 = load i64, i64* %reg_14_ptr
-  %t31 = load i64, i64* %reg_12_ptr
-  %t32 = icmp slt i64 %t30, %t31
-  %t33 = zext i1 %t32 to i64
-  store i64 %t33, i64* %reg_15_ptr
-  %t34 = load i64, i64* %reg_15_ptr
-  %t36 = icmp ne i64 %t34, 0
-  %t37 = zext i1 %t36 to i64
-  %t35 = icmp ne i64 %t37, 0
-  br i1 %t35, label %main_b6, label %main_b8
+  %t27 = load i64, i64* %var_i_ptr
+  store i64 %t27, i64* %reg_14_ptr
+  %t28 = load i64, i64* %reg_14_ptr
+  %t29 = load i64, i64* %reg_12_ptr
+  %t30 = icmp slt i64 %t28, %t29
+  %t31 = zext i1 %t30 to i64
+  store i64 %t31, i64* %reg_15_ptr
+  %t32 = load i64, i64* %reg_15_ptr
+  %t34 = icmp ne i64 %t32, 0
+  %t35 = zext i1 %t34 to i64
+  %t33 = icmp ne i64 %t35, 0
+  br i1 %t33, label %main_b6, label %main_b8
 main_b6:
-  %t38 = load i8*, i8** %var_u_ptr
-  store i8* %t38, i8** %reg_16_ptr
-  %t39 = load i64, i64* %var_n_ptr
-  store i64 %t39, i64* %reg_17_ptr
-  %t40 = load i8*, i8** %var_v_ptr
-  store i8* %t40, i8** %reg_18_ptr
-  %t41 = load i8*, i8** %reg_16_ptr
-  %t42 = load i64, i64* %reg_17_ptr
-  %t43 = load i8*, i8** %reg_18_ptr
-  %t44 = call i64 @eval_AtA_times_u(i8* %t41, i64 %t42, i8* %t43)
-  store i64 %t44, i64* %reg_19_ptr
-  %t45 = load i8*, i8** %var_v_ptr
-  store i8* %t45, i8** %reg_20_ptr
-  %t46 = load i64, i64* %var_n_ptr
-  store i64 %t46, i64* %reg_21_ptr
-  %t47 = load i8*, i8** %var_u_ptr
-  store i8* %t47, i8** %reg_22_ptr
-  %t48 = load i8*, i8** %reg_20_ptr
-  %t49 = load i64, i64* %reg_21_ptr
-  %t50 = load i8*, i8** %reg_22_ptr
-  %t51 = call i64 @eval_AtA_times_u(i8* %t48, i64 %t49, i8* %t50)
-  store i64 %t51, i64* %reg_23_ptr
+  %t36 = load i8*, i8** %var_u_ptr
+  store i8* %t36, i8** %reg_16_ptr
+  %t37 = load i64, i64* %var_n_ptr
+  store i64 %t37, i64* %reg_17_ptr
+  %t38 = load i8*, i8** %var_v_ptr
+  store i8* %t38, i8** %reg_18_ptr
+  %t39 = load i8*, i8** %reg_16_ptr
+  %t40 = load i64, i64* %reg_17_ptr
+  %t41 = load i8*, i8** %reg_18_ptr
+  %t42 = call i64 @eval_AtA_times_u(i8* %t39, i64 %t40, i8* %t41)
+  store i64 %t42, i64* %reg_19_ptr
+  %t43 = load i8*, i8** %var_v_ptr
+  store i8* %t43, i8** %reg_20_ptr
+  %t44 = load i64, i64* %var_n_ptr
+  store i64 %t44, i64* %reg_21_ptr
+  %t45 = load i8*, i8** %var_u_ptr
+  store i8* %t45, i8** %reg_22_ptr
+  %t46 = load i8*, i8** %reg_20_ptr
+  %t47 = load i64, i64* %reg_21_ptr
+  %t48 = load i8*, i8** %reg_22_ptr
+  %t49 = call i64 @eval_AtA_times_u(i8* %t46, i64 %t47, i8* %t48)
+  store i64 %t49, i64* %reg_23_ptr
   br label %main_b7
 main_b7:
-  %t52 = load i64, i64* %var_i_ptr
-  store i64 %t52, i64* %reg_24_ptr
-  %t53 = load i64, i64* %reg_24_ptr
-  %t54 = load i64, i64* %reg_13_ptr
-  %t55 = add i64 %t53, %t54
-  store i64 %t55, i64* %reg_25_ptr
-  %t56 = load i64, i64* %reg_25_ptr
-  store i64 %t56, i64* %var_i_ptr
+  %t50 = load i64, i64* %var_i_ptr
+  store i64 %t50, i64* %reg_24_ptr
+  %t51 = load i64, i64* %reg_24_ptr
+  %t52 = load i64, i64* %reg_13_ptr
+  %t53 = add i64 %t51, %t52
+  store i64 %t53, i64* %reg_25_ptr
+  %t54 = load i64, i64* %reg_25_ptr
+  store i64 %t54, i64* %var_i_ptr
   br label %main_b5
 main_b8:
   store double 0x0000000000000000, double* %var_vBv_ptr
   store double 0x0000000000000000, double* %var_vv_ptr
   store i64 0, i64* %var_i_ptr
-  %t57 = load i64, i64* %var_n_ptr
-  store i64 %t57, i64* %reg_26_ptr
+  %t55 = load i64, i64* %var_n_ptr
+  store i64 %t55, i64* %reg_26_ptr
   store i64 1, i64* %reg_27_ptr
   br label %main_b9
 main_b9:
-  %t58 = load i64, i64* %var_i_ptr
-  store i64 %t58, i64* %reg_28_ptr
-  %t59 = load i64, i64* %reg_28_ptr
-  %t60 = load i64, i64* %reg_26_ptr
-  %t61 = icmp slt i64 %t59, %t60
-  %t62 = zext i1 %t61 to i64
-  store i64 %t62, i64* %reg_29_ptr
-  %t63 = load i64, i64* %reg_29_ptr
-  %t65 = icmp ne i64 %t63, 0
-  %t66 = zext i1 %t65 to i64
-  %t64 = icmp ne i64 %t66, 0
-  br i1 %t64, label %main_b10, label %main_b12
+  %t56 = load i64, i64* %var_i_ptr
+  store i64 %t56, i64* %reg_28_ptr
+  %t57 = load i64, i64* %reg_28_ptr
+  %t58 = load i64, i64* %reg_26_ptr
+  %t59 = icmp slt i64 %t57, %t58
+  %t60 = zext i1 %t59 to i64
+  store i64 %t60, i64* %reg_29_ptr
+  %t61 = load i64, i64* %reg_29_ptr
+  %t63 = icmp ne i64 %t61, 0
+  %t64 = zext i1 %t63 to i64
+  %t62 = icmp ne i64 %t64, 0
+  br i1 %t62, label %main_b10, label %main_b12
 main_b10:
-  %t67 = load double, double* %var_vBv_ptr
-  store double %t67, double* %reg_30_ptr
-  %t68 = load i8*, i8** %var_u_ptr
-  store i8* %t68, i8** %reg_31_ptr
-  %t69 = load i64, i64* %var_i_ptr
-  store i64 %t69, i64* %reg_32_ptr
-  %t70 = load i8*, i8** %reg_31_ptr
-  %t71 = load i64, i64* %reg_32_ptr
-  %t72 = mul i64 %t71, 16
-  %t73 = add i64 %t72, 16
-  %t74 = getelementptr i8, i8* %t70, i64 %t73
-  store i8* %t74, i8** %reg_33_ptr
+  %t65 = load double, double* %var_vBv_ptr
+  store double %t65, double* %reg_30_ptr
+  %t66 = load i8*, i8** %var_u_ptr
+  store i8* %t66, i8** %reg_31_ptr
+  %t67 = load i64, i64* %var_i_ptr
+  store i64 %t67, i64* %reg_32_ptr
+  %t68 = load i8*, i8** %reg_31_ptr
+  %t69 = load i64, i64* %reg_32_ptr
+  %t70 = mul i64 %t69, 8
+  %t71 = add i64 %t70, 16
+  %t72 = getelementptr i8, i8* %t68, i64 %t71
+  %t73 = bitcast i8* %t72 to double*
+  %t74 = load double, double* %t73
+  store double %t74, double* %reg_33_ptr
   %t75 = load i8*, i8** %var_v_ptr
   store i8* %t75, i8** %reg_34_ptr
   %t76 = load i64, i64* %var_i_ptr
   store i64 %t76, i64* %reg_35_ptr
   %t77 = load i8*, i8** %reg_34_ptr
   %t78 = load i64, i64* %reg_35_ptr
-  %t79 = mul i64 %t78, 16
+  %t79 = mul i64 %t78, 8
   %t80 = add i64 %t79, 16
   %t81 = getelementptr i8, i8* %t77, i64 %t80
-  store i8* %t81, i8** %reg_36_ptr
-  %t82 = load i8*, i8** %reg_33_ptr
-  %t83 = load i8*, i8** %reg_36_ptr
-  %t84 = call i8* @obo_dyn_arith(i8* %t82, i8* %t83, i32 2)
-  store i8* %t84, i8** %reg_37_ptr
-  %t85 = load double, double* %reg_30_ptr
-  %t86 = load i8*, i8** %reg_37_ptr
-  %t88 = getelementptr i8, i8* %t86, i64 0
-  %t89 = bitcast i8* %t88 to i64*
-  %t90 = load i64, i64* %t89
-  %t91 = getelementptr i8, i8* %t86, i64 8
-  %t92 = bitcast i8* %t91 to i64*
-  %t93 = load i64, i64* %t92
-  %t94 = icmp eq i64 %t90, 5
-  %t95 = bitcast i64 %t93 to double
-  %t96 = sitofp i64 %t93 to double
-  %t87 = select i1 %t94, double %t95, double %t96
-  %t97 = fadd contract double %t85, %t87
-  store double %t97, double* %reg_38_ptr
-  %t98 = load double, double* %reg_38_ptr
-  store double %t98, double* %var_vBv_ptr
-  %t99 = load double, double* %var_vv_ptr
-  store double %t99, double* %reg_39_ptr
-  %t100 = load i8*, i8** %var_v_ptr
-  store i8* %t100, i8** %reg_40_ptr
-  %t101 = load i64, i64* %var_i_ptr
-  store i64 %t101, i64* %reg_41_ptr
-  %t102 = load i8*, i8** %reg_40_ptr
-  %t103 = load i64, i64* %reg_41_ptr
-  %t104 = mul i64 %t103, 16
-  %t105 = add i64 %t104, 16
-  %t106 = getelementptr i8, i8* %t102, i64 %t105
-  store i8* %t106, i8** %reg_42_ptr
-  %t107 = load i8*, i8** %var_v_ptr
-  store i8* %t107, i8** %reg_43_ptr
-  %t108 = load i64, i64* %var_i_ptr
-  store i64 %t108, i64* %reg_44_ptr
-  %t109 = load i8*, i8** %reg_43_ptr
-  %t110 = load i64, i64* %reg_44_ptr
-  %t111 = mul i64 %t110, 16
-  %t112 = add i64 %t111, 16
-  %t113 = getelementptr i8, i8* %t109, i64 %t112
-  store i8* %t113, i8** %reg_45_ptr
-  %t114 = load i8*, i8** %reg_42_ptr
-  %t115 = load i8*, i8** %reg_45_ptr
-  %t116 = call i8* @obo_dyn_arith(i8* %t114, i8* %t115, i32 2)
-  store i8* %t116, i8** %reg_46_ptr
-  %t117 = load double, double* %reg_39_ptr
-  %t118 = load i8*, i8** %reg_46_ptr
-  %t120 = getelementptr i8, i8* %t118, i64 0
-  %t121 = bitcast i8* %t120 to i64*
-  %t122 = load i64, i64* %t121
-  %t123 = getelementptr i8, i8* %t118, i64 8
-  %t124 = bitcast i8* %t123 to i64*
-  %t125 = load i64, i64* %t124
-  %t126 = icmp eq i64 %t122, 5
-  %t127 = bitcast i64 %t125 to double
-  %t128 = sitofp i64 %t125 to double
-  %t119 = select i1 %t126, double %t127, double %t128
-  %t129 = fadd contract double %t117, %t119
-  store double %t129, double* %reg_47_ptr
-  %t130 = load double, double* %reg_47_ptr
-  store double %t130, double* %var_vv_ptr
+  %t82 = bitcast i8* %t81 to double*
+  %t83 = load double, double* %t82
+  store double %t83, double* %reg_36_ptr
+  %t84 = load double, double* %reg_33_ptr
+  %t85 = load double, double* %reg_36_ptr
+  %t86 = fmul reassoc contract double %t84, %t85
+  store double %t86, double* %reg_37_ptr
+  %t87 = load double, double* %reg_30_ptr
+  %t88 = load double, double* %reg_37_ptr
+  %t89 = fadd reassoc contract double %t87, %t88
+  store double %t89, double* %reg_38_ptr
+  %t90 = load double, double* %reg_38_ptr
+  store double %t90, double* %var_vBv_ptr
+  %t91 = load double, double* %var_vv_ptr
+  store double %t91, double* %reg_39_ptr
+  %t92 = load i8*, i8** %var_v_ptr
+  store i8* %t92, i8** %reg_40_ptr
+  %t93 = load i64, i64* %var_i_ptr
+  store i64 %t93, i64* %reg_41_ptr
+  %t94 = load i8*, i8** %reg_40_ptr
+  %t95 = load i64, i64* %reg_41_ptr
+  %t96 = mul i64 %t95, 8
+  %t97 = add i64 %t96, 16
+  %t98 = getelementptr i8, i8* %t94, i64 %t97
+  %t99 = bitcast i8* %t98 to double*
+  %t100 = load double, double* %t99
+  store double %t100, double* %reg_42_ptr
+  %t101 = load i8*, i8** %var_v_ptr
+  store i8* %t101, i8** %reg_43_ptr
+  %t102 = load i64, i64* %var_i_ptr
+  store i64 %t102, i64* %reg_44_ptr
+  %t103 = load i8*, i8** %reg_43_ptr
+  %t104 = load i64, i64* %reg_44_ptr
+  %t105 = mul i64 %t104, 8
+  %t106 = add i64 %t105, 16
+  %t107 = getelementptr i8, i8* %t103, i64 %t106
+  %t108 = bitcast i8* %t107 to double*
+  %t109 = load double, double* %t108
+  store double %t109, double* %reg_45_ptr
+  %t110 = load double, double* %reg_42_ptr
+  %t111 = load double, double* %reg_45_ptr
+  %t112 = fmul reassoc contract double %t110, %t111
+  store double %t112, double* %reg_46_ptr
+  %t113 = load double, double* %reg_39_ptr
+  %t114 = load double, double* %reg_46_ptr
+  %t115 = fadd reassoc contract double %t113, %t114
+  store double %t115, double* %reg_47_ptr
+  %t116 = load double, double* %reg_47_ptr
+  store double %t116, double* %var_vv_ptr
   br label %main_b11
 main_b11:
-  %t131 = load i64, i64* %var_i_ptr
-  store i64 %t131, i64* %reg_48_ptr
-  %t132 = load i64, i64* %reg_48_ptr
-  %t133 = load i64, i64* %reg_27_ptr
-  %t134 = add i64 %t132, %t133
-  store i64 %t134, i64* %reg_49_ptr
-  %t135 = load i64, i64* %reg_49_ptr
-  store i64 %t135, i64* %var_i_ptr
+  %t117 = load i64, i64* %var_i_ptr
+  store i64 %t117, i64* %reg_48_ptr
+  %t118 = load i64, i64* %reg_48_ptr
+  %t119 = load i64, i64* %reg_27_ptr
+  %t120 = add i64 %t118, %t119
+  store i64 %t120, i64* %reg_49_ptr
+  %t121 = load i64, i64* %reg_49_ptr
+  store i64 %t121, i64* %var_i_ptr
   br label %main_b9
 main_b12:
-  %t136 = load double, double* %var_vBv_ptr
-  store double %t136, double* %reg_50_ptr
-  %t137 = load double, double* %var_vv_ptr
-  store double %t137, double* %reg_51_ptr
-  %t138 = load double, double* %reg_50_ptr
-  %t139 = load double, double* %reg_51_ptr
-  %t140 = fdiv contract double %t138, %t139
-  store double %t140, double* %reg_52_ptr
-  %t141 = load double, double* %reg_52_ptr
-  %t142 = call double @__sys_Math_sqrt(double %t141)
-  store double %t142, double* %reg_53_ptr
-  %t143 = load double, double* %reg_53_ptr
-  store double %t143, double* %var_result_ptr
-  %t144 = load double, double* %var_result_ptr
-  store double %t144, double* %reg_54_ptr
-  %t145 = load double, double* %reg_54_ptr
-  %t146 = call i8* @obo_f64_to_str(double %t145)
-  %t147 = call i8* @obo_str_concat(i8* getelementptr inbounds ([16 x i8], [16 x i8]* @obo.str.1, i64 0, i64 0), i8* %t146)
-  store i8* %t147, i8** %reg_55_ptr
-  %t148 = load i8*, i8** %reg_55_ptr
-  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([4 x i8], [4 x i8]* @obo.fmt.str, i64 0, i64 0), i8* %t148)
+  %t122 = load double, double* %var_vBv_ptr
+  store double %t122, double* %reg_50_ptr
+  %t123 = load double, double* %var_vv_ptr
+  store double %t123, double* %reg_51_ptr
+  %t124 = load double, double* %reg_50_ptr
+  %t125 = load double, double* %reg_51_ptr
+  %t126 = fdiv reassoc contract double %t124, %t125
+  store double %t126, double* %reg_52_ptr
+  %t127 = load double, double* %reg_52_ptr
+  %t128 = call double @__sys_Math_sqrt(double %t127)
+  store double %t128, double* %reg_53_ptr
+  %t129 = load double, double* %reg_53_ptr
+  store double %t129, double* %var_result_ptr
+  %t130 = load double, double* %var_result_ptr
+  store double %t130, double* %reg_54_ptr
+  %t131 = load double, double* %reg_54_ptr
+  %t132 = call i8* @obo_f64_to_str(double %t131)
+  %t133 = call i8* @obo_str_concat(i8* getelementptr inbounds ([16 x i8], [16 x i8]* @obo.str.1, i64 0, i64 0), i8* %t132)
+  store i8* %t133, i8** %reg_55_ptr
+  %t134 = load i8*, i8** %reg_55_ptr
+  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([4 x i8], [4 x i8]* @obo.fmt.str, i64 0, i64 0), i8* %t134)
   call void @obo_gc_pop_roots(i64 7)
   call void @obo_arena_free_all()
   ret i32 0

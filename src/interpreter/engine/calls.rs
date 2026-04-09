@@ -411,6 +411,115 @@ impl Interpreter {
             }
         }
 
+        if let Value::F64List(ref items) = object {
+            match method {
+                "filter" => {
+                    if let Some(action_val) = arg_vals.first() {
+                        let mut result = Vec::new();
+                        for &item in items {
+                            let passes = self.call_value(action_val, &[Value::Decimal(item)])?;
+                            if passes.is_truthy() {
+                                result.push(item);
+                            }
+                        }
+                        return self.maybe_writeback(obj_expr, Value::F64List(result));
+                    }
+                    return Err("Obo: filter needs an action 🤨".into());
+                }
+                "map" => {
+                    if let Some(action_val) = arg_vals.first() {
+                        let mut result = Vec::new();
+                        for &item in items {
+                            let val = self.call_value(action_val, &[Value::Decimal(item)])?;
+                            match val {
+                                Value::Decimal(d) => result.push(d),
+                                Value::Number(n) => result.push(n as f64),
+                                _ => {
+                                    // Falls back to mixed list if map produces non-numeric
+                                    let mut mixed: Vec<Value> = result.iter().map(|d| Value::Decimal(*d)).collect();
+                                    mixed.push(val);
+                                    for &remaining in &items[mixed.len()..] {
+                                        mixed.push(self.call_value(action_val, &[Value::Decimal(remaining)])?);
+                                    }
+                                    return self.maybe_writeback(obj_expr, Value::List(mixed));
+                                }
+                            }
+                        }
+                        return self.maybe_writeback(obj_expr, Value::F64List(result));
+                    }
+                    return Err("Obo: map needs an action 🤨".into());
+                }
+                "reduce" => {
+                    if arg_vals.len() >= 2 {
+                        let mut acc = arg_vals[0].clone();
+                        let action_val = &arg_vals[1];
+                        for &item in items {
+                            acc = self.call_value(action_val, &[acc, Value::Decimal(item)])?;
+                        }
+                        return Ok(acc);
+                    }
+                    return Err("Obo: reduce needs an initial value and an action 🤨".into());
+                }
+                "any" => {
+                    if let Some(action_val) = arg_vals.first() {
+                        for &item in items {
+                            if self.call_value(action_val, &[Value::Decimal(item)])?.is_truthy() {
+                                return Ok(Value::Flag(true));
+                            }
+                        }
+                        return Ok(Value::Flag(false));
+                    }
+                    return Err("Obo: any needs an action 🤨".into());
+                }
+                "all" => {
+                    if let Some(action_val) = arg_vals.first() {
+                        for &item in items {
+                            if !self.call_value(action_val, &[Value::Decimal(item)])?.is_truthy() {
+                                return Ok(Value::Flag(false));
+                            }
+                        }
+                        return Ok(Value::Flag(true));
+                    }
+                    return Err("Obo: all needs an action 🤨".into());
+                }
+                "sortBy" => {
+                    if let Some(action_val) = arg_vals.first() {
+                        let mut sorted = items.to_vec();
+                        let action_clone = action_val.clone();
+                        let mut err: Option<String> = None;
+                        sorted.sort_by(|a, b| {
+                            if err.is_some() {
+                                return std::cmp::Ordering::Equal;
+                            }
+                            match self.call_value(&action_clone, &[Value::Decimal(*a), Value::Decimal(*b)]) {
+                                Ok(Value::Number(n)) => {
+                                    if n < 0 { std::cmp::Ordering::Less }
+                                    else if n > 0 { std::cmp::Ordering::Greater }
+                                    else { std::cmp::Ordering::Equal }
+                                }
+                                Ok(Value::Decimal(d)) => {
+                                    if d < 0.0 { std::cmp::Ordering::Less }
+                                    else if d > 0.0 { std::cmp::Ordering::Greater }
+                                    else { std::cmp::Ordering::Equal }
+                                }
+                                Ok(_) => std::cmp::Ordering::Equal,
+                                Err(e) => { err = Some(e); std::cmp::Ordering::Equal }
+                            }
+                        });
+                        if let Some(e) = err {
+                            return Err(e);
+                        }
+                        return self.maybe_writeback(obj_expr, Value::F64List(sorted));
+                    }
+                    return Err("Obo: sortBy needs a comparator action 🤨".into());
+                }
+                _ => {}
+            }
+            if let Some(result) = stdlib::collections::f64list_method(items, method, &arg_vals) {
+                return self.maybe_writeback_result(obj_expr, method, result);
+            }
+        }
+
         if let Value::Map(ref map) = object {
             if let Some(result) = stdlib::collections::map_method(map, method, &arg_vals) {
                 return self.maybe_writeback_result(obj_expr, method, result);

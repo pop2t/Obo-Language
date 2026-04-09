@@ -499,6 +499,61 @@ int64_t obo_bag_has(void *lst, int64_t v) { return rt_list_contains((int64_t)lst
 void *obo_bag_remove(void *lst, int64_t v) { return obo_list_remove(lst, v); }
 
 /* ═══════════════════════════════════════════════════════════
+ *  4b. F64 List operations — typed double array
+ *      Layout: [len(i64), cap(i64), items[](double each)]
+ *      Same struct shape as IList but items are doubles.
+ * ═══════════════════════════════════════════════════════════ */
+typedef struct { int64_t len; int64_t cap; double items[]; } F64List;
+
+static F64List *f64list_alloc(int64_t cap) {
+    if (cap < 4) cap = 4;
+    F64List *l = (F64List *)malloc(sizeof(F64List) + cap * sizeof(double));
+    l->len = 0;
+    l->cap = cap;
+    return l;
+}
+
+static F64List *f64list_grow(F64List *l, int64_t new_cap) {
+    F64List *nl = (F64List *)realloc(l, sizeof(F64List) + new_cap * sizeof(double));
+    nl->cap = new_cap;
+    return nl;
+}
+
+void *obo_f64_list_new(int64_t len, double *elems) {
+    int64_t cap = len < 4 ? 4 : len;
+    F64List *l = f64list_alloc(cap);
+    for (int64_t i = 0; i < len; i++) l->items[i] = elems[i];
+    l->len = len;
+    return (void *)l;
+}
+
+void *obo_f64_list_add(void *lst, double v) {
+    F64List *l = (F64List *)lst;
+    if (!l) { l = f64list_alloc(4); }
+    if (l->len >= l->cap) {
+        l = f64list_grow(l, l->cap * 2);
+    }
+    l->items[l->len++] = v;
+    return (void *)l;
+}
+
+double obo_f64_list_get(void *lst, int64_t i) {
+    F64List *l = (F64List *)lst;
+    if (!l || i < 0 || i >= l->len) return 0.0;
+    return l->items[i];
+}
+
+void obo_f64_list_set(void *lst, int64_t i, double v) {
+    F64List *l = (F64List *)lst;
+    if (!l || i < 0 || i >= l->len) return;
+    l->items[i] = v;
+}
+
+int64_t obo_f64_list_length(void *lst) {
+    return lst ? ((F64List *)lst)->len : 0;
+}
+
+/* ═══════════════════════════════════════════════════════════
  *  5. Map operations
  * ═══════════════════════════════════════════════════════════ */
 void *obo_map_new(void) {

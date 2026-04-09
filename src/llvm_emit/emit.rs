@@ -21,7 +21,8 @@ fn llvm_fn_ret_ty(name: &str, fn_ret: &HashMap<String, LowType>) -> &'static str
         | LowType::Dyn
         | LowType::Closure
         | LowType::Task
-        | LowType::MixedList => "i8*",
+        | LowType::MixedList
+        | LowType::F64List => "i8*",
         LowType::F64 => "double",
         LowType::I64 | LowType::Bool => "i64",
     }
@@ -47,6 +48,7 @@ pub fn emit_program(ir: &mut IrProgram, debug: bool, no_gc: bool) -> Result<(Str
             LowType::F64 => IrParamType::F64,
             LowType::Closure => IrParamType::Closure,
             LowType::Task => IrParamType::Task,
+            LowType::F64List => IrParamType::F64List,
         };
         for _ in 0..8 {
             let mut refinements: HashMap<String, Vec<Option<LowType>>> = HashMap::new();
@@ -351,6 +353,11 @@ pub fn emit_program(ir: &mut IrProgram, debug: bool, no_gc: bool) -> Result<(Str
     out.push_str("declare double @__text_toDecimal(i8*) nounwind readonly\n");
     out.push_str("declare i8* @__text_split(i8*, i8*) nounwind\n");
     out.push_str("declare i8* @obo_list_add(i8*, i64) nounwind\n");
+    out.push_str("declare i8* @obo_f64_list_new(i64, double*) nounwind\n");
+    out.push_str("declare i8* @obo_f64_list_add(i8*, double) nounwind\n");
+    out.push_str("declare double @obo_f64_list_get(i8*, i64) nounwind readonly\n");
+    out.push_str("declare void @obo_f64_list_set(i8*, i64, double) nounwind\n");
+    out.push_str("declare i64 @obo_f64_list_length(i8*) nounwind readonly\n");
     out.push_str("declare i64 @obo_list_first(i8*) nounwind readonly\n");
     out.push_str("declare i64 @obo_list_last(i8*) nounwind readonly\n");
     out.push_str("declare i64 @obo_list_empty(i8*) nounwind readonly\n");

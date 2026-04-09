@@ -158,6 +158,7 @@ impl Interpreter {
                 let iterable = self.eval_expr(&f.iterable)?;
                 let items = match &iterable {
                     Value::List(items) => items.clone(),
+                    Value::F64List(items) => items.iter().map(|d| Value::Decimal(*d)).collect(),
                     Value::Set(items) => items.clone(),
                     Value::Queue(items) => items.clone(),
                     Value::Stack(items) => items.clone(),
@@ -298,6 +299,12 @@ impl Interpreter {
                     Value::List(items) => {
                         for (index, name) in m.targets.iter().enumerate() {
                             let value = items.get(index).cloned().unwrap_or(Value::Null);
+                            self.env.define_or_set(name, value);
+                        }
+                    }
+                    Value::F64List(items) => {
+                        for (index, name) in m.targets.iter().enumerate() {
+                            let value = items.get(index).map(|d| Value::Decimal(*d)).unwrap_or(Value::Null);
                             self.env.define_or_set(name, value);
                         }
                     }
@@ -473,6 +480,22 @@ impl Interpreter {
                             let i = *i as usize;
                             if i < items.len() {
                                 items[i] = value;
+                            } else {
+                                return Err(format!(
+                                    "Obo: Index {} is out of bounds (list has {} items) 😬",
+                                    i,
+                                    items.len()
+                                ));
+                            }
+                        }
+                        (Value::F64List(items), Value::Number(i)) => {
+                            let i = *i as usize;
+                            if i < items.len() {
+                                match &value {
+                                    Value::Decimal(d) => items[i] = *d,
+                                    Value::Number(n) => items[i] = *n as f64,
+                                    _ => return Err("Obo: F64 list only accepts numbers 🤨".into()),
+                                }
                             } else {
                                 return Err(format!(
                                     "Obo: Index {} is out of bounds (list has {} items) 😬",
