@@ -568,4 +568,9 @@ SKIP_INTERP=1 bash benchmarks/suite/run_all.sh
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+Licensed under either of
+
+- Apache License, Version 2.0 (LICENSE-APACHE)
+- MIT License (LICENSE-MIT)
+
+Copyright 2026 Hamza Trabelsi
