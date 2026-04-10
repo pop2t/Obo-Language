@@ -1,0 +1,25 @@
+// Test: metal blocks pause GC — allocations inside metal use malloc, not GC
+
+function main() {
+    // Create a list in safe mode (GC-tracked)
+    items = [1, 2, 3];
+    show "Safe list: " + items.count;
+
+    // Metal block — GC is paused, allocations use malloc
+    metal {
+        // Create a list inside metal — same syntax, but malloc-backed
+        data = [10, 20, 30];
+        show "Metal list: " + data.count;
+
+        // Create a map inside metal
+        lookup = ["a": 1, "b": 2];
+        show "Metal map created";
+
+        // Text operations work too
+        msg = "hello metal";
+        show msg;
+    }
+
+    show "Done!";
+}
+main;

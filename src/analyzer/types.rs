@@ -64,6 +64,15 @@ impl OboType {
         matches!(self, OboType::Unknown)
     }
 
+    /// Returns true for GC-tracked types that cannot enter metal blocks.
+    /// Lists, maps, sets, actors, closures, tasks, and non-packed entities.
+    pub fn is_gc_tracked(&self) -> bool {
+        matches!(self,
+            OboType::List(_) | OboType::Map(_, _) | OboType::Set(_)
+            | OboType::Actor(_) | OboType::Action(_, _) | OboType::Task
+        )
+    }
+
     pub fn is_nullable(&self) -> bool {
         matches!(self, OboType::Null | OboType::Nullable(_))
     }

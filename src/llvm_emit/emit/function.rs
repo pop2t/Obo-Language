@@ -2269,6 +2269,10 @@ fn emit_inst(
                     out, tmp32
                 ));
                 store_reg_value(s, *r, &out, LowType::I64);
+            } else if name == "obo_metal_enter" || name == "obo_metal_exit" {
+                // Void-returning metal mode functions
+                s.push_str(&format!("  call void @{}()\n", name));
+                store_reg_value(s, *r, "0", LowType::I64);
             } else if let Some(bfn) = ir.bridge_fns.iter().find(|b| b.name == *name) {
                 // Bridge (FFI) function call — use the declared LLVM return type.
                 // If there's a conflict with an existing declaration, use the existing type.

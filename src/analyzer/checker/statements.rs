@@ -357,11 +357,18 @@ impl Checker {
                 self.check_statements(&p.else_body);
                 self.symbols.pop_scope();
             }
-            Statement::Block(stmts)
-            | Statement::SafeBlock(stmts, _) => {
+            Statement::Block(stmts) => {
                 self.symbols.push_scope();
                 self.check_statements(stmts);
                 self.symbols.pop_scope();
+            }
+            Statement::SafeBlock(stmts, _) => {
+                let was_metal = self.in_metal;
+                self.in_metal = false; // safe {} resets to safe context
+                self.symbols.push_scope();
+                self.check_statements(stmts);
+                self.symbols.pop_scope();
+                self.in_metal = was_metal;
             }
             Statement::MetalBlock(stmts, _) => {
                 let was_metal = self.in_metal;
@@ -423,6 +430,16 @@ impl Checker {
                 }
             }
             Statement::Run(r) => {
+                if self.in_metal {
+                    self.errors.push(
+                        OboError::new(
+                            ErrorKind::InvalidOperation,
+                            "run (async tasks) can't be used inside metal blocks",
+                            r.span,
+                        )
+                        .with_hint("Move async operations outside the metal block."),
+                    );
+                }
                 self.infer_expr_type(&r.expr);
             }
             Statement::Emit(e) => {

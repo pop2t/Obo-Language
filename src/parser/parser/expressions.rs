@@ -585,11 +585,58 @@ impl Parser {
             | TokenKind::KwPointer | TokenKind::KwHandle | TokenKind::KwBag | TokenKind::KwPair
             | TokenKind::KwSlice | TokenKind::KwBuffer
             | TokenKind::KwGrid2d | TokenKind::KwGrid3d
-            | TokenKind::KwReflect => {
+            | TokenKind::KwReflect | TokenKind::KwCursor => {
                 let name = token.lexeme.clone();
                 let span = token.span;
                 self.advance();
                 Ok(Expr::Identifier(name, span))
+            }
+            TokenKind::KwMetal => {
+                let span = self.advance().span;
+                let body = self.parse_block()?;
+                Ok(Expr::MetalExpr(body, span))
+            }
+            TokenKind::KwMemo => {
+                let span = self.advance().span;
+                // Expect memo.method(...)
+                self.expect(TokenKind::Dot)?;
+                let method = self.expect_identifier()?;
+                self.expect(TokenKind::LeftParen)?;
+                match method.as_str() {
+                    "reserve" => {
+                        // memo.reserve(size)
+                        let size = self.parse_expression()?;
+                        self.expect(TokenKind::RightParen)?;
+                        Ok(Expr::MemoReserve(Box::new(size), span))
+                    }
+                    "clean" => {
+                        // memo.clean(cursor)
+                        let addr = self.parse_expression()?;
+                        self.expect(TokenKind::RightParen)?;
+                        Ok(Expr::MemoClean(Box::new(addr), span))
+                    }
+                    "grab8" | "grab16" | "grab32" | "grab64" => {
+                        // memo.grabN(at address)
+                        let width: u8 = method[4..].parse().unwrap();
+                        self.expect(TokenKind::KwAtAddr)?;
+                        let addr = self.parse_expression()?;
+                        self.expect(TokenKind::RightParen)?;
+                        Ok(Expr::MemoLoad { width, address: Box::new(addr), span })
+                    }
+                    "drop8" | "drop16" | "drop32" | "drop64" => {
+                        // memo.dropN(value at address)
+                        let width: u8 = method[4..].parse().unwrap();
+                        let value = self.parse_expression()?;
+                        self.expect(TokenKind::KwAtAddr)?;
+                        let addr = self.parse_expression()?;
+                        self.expect(TokenKind::RightParen)?;
+                        Ok(Expr::MemoStore { width, value: Box::new(value), address: Box::new(addr), span })
+                    }
+                    _ => {
+                        self.error_at_current(&format!("memo doesn't have '{}' — try reserve, clean, grab8/16/32/64, or drop8/16/32/64", method));
+                        Err(())
+                    }
+                }
             }
             _ => {
                 self.error_at_current(&format!("I didn't expect '{}'", token.lexeme));

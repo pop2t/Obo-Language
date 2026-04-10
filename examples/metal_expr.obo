@@ -1,0 +1,38 @@
+// Test: metal as expression — value = metal { out x; }
+
+function main()
+{
+    // Metal expression: produces a value
+    value = metal
+    {
+        buf = pointer.alloc(64);
+        defer { pointer.free(buf); }
+        mem.store64(buf, 42);
+        out mem.load64(buf);
+    };
+
+    show "Value from metal expression: {value}";
+
+    // Metal expression used inline
+    doubled = metal
+    {
+        buf = pointer.alloc(8);
+        defer { pointer.free(buf); }
+        mem.store64(buf, value * 2);
+        out mem.load64(buf);
+    };
+
+    show "Doubled: {doubled}";
+
+    // Statement form still works
+    metal
+    {
+        buf = pointer.alloc(8);
+        defer { pointer.free(buf); }
+        mem.store64(buf, 99);
+        show "Statement metal: {mem.load64(buf)}";
+    }
+
+    show "Done";
+}
+main;

@@ -147,6 +147,9 @@ pub enum TokenKind {
     KwDefer,
     KwOwn,
     KwAsm,
+    KwMemo,
+    KwCursor,
+    KwAtAddr,  // 'at' keyword for memo operations (metal-only)
 
     // --- Concurrency ---
     KwRun,
@@ -320,6 +323,9 @@ impl TokenKind {
             "defer" => Some(TokenKind::KwDefer),
             "own" => Some(TokenKind::KwOwn),
             "asm" => Some(TokenKind::KwAsm),
+            "memo" => Some(TokenKind::KwMemo),
+            "cursor" => Some(TokenKind::KwCursor),
+            "at" => Some(TokenKind::KwAtAddr),
 
             // Concurrency
             "run" => Some(TokenKind::KwRun),

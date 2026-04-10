@@ -1,0 +1,44 @@
+/// Comprehensive metal boundary test — every case should be checked
+/// Run with: obo check examples/boundary_test_errors.obo
+/// Every uncommented line inside metal should produce an error.
+
+function main()
+{
+    items = [1, 2, 3];
+    name = "hello";
+
+    metal
+    {
+        // 1. GC variable capture: list from outer scope
+        show items;
+
+        // 2. List literal inside metal
+        bad_list = [4, 5, 6];
+
+        // 3. Map literal inside metal
+        bad_map = ["a": 1];
+
+        // 4. Text mutation in metal (text.upper is not allowed)
+        x = name.upper;
+
+        // 5. Closure creation in metal
+        f = action(x) { show x; };
+
+        // 6. Arrow closure in metal
+        g = (x) => x * 2;
+
+        // 7. Set constructor in metal
+        s = set();
+
+        // 8. Queue constructor in metal
+        q = queue();
+
+        // 9. Channel creation in metal
+        ch = channel;
+
+        // 10. Run (async) in metal
+        run main();
+    }
+}
+
+main;

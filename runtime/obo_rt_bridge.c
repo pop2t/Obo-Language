@@ -196,6 +196,19 @@ void obo_gc_resume(void) {
     if (__obo_gc_ctx) rt_gc_resume(__obo_gc_ctx);
 }
 
+/* Metal mode: pause/resume GC with nesting support */
+static int __obo_metal_depth = 0;
+
+void obo_metal_enter(void) {
+    __obo_metal_depth++;
+    obo_gc_pause();
+}
+
+void obo_metal_exit(void) {
+    if (__obo_metal_depth > 0) __obo_metal_depth--;
+    if (__obo_metal_depth == 0) obo_gc_resume();
+}
+
 /* ═══════════════════════════════════════════════════════════
  *  2. String operations
  * ═══════════════════════════════════════════════════════════ */

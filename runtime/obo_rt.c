@@ -3303,6 +3303,19 @@ void obo_gc_collect(void) {
 void obo_gc_pause(void) { __obo_gc_paused = 1; }
 void obo_gc_resume(void) { __obo_gc_paused = 0; }
 
+/* ── Metal mode: disable GC tracking for allocations inside metal blocks ── */
+static int __obo_metal_depth = 0;
+
+void obo_metal_enter(void) {
+    __obo_metal_depth++;
+    __obo_gc_paused = 1;
+}
+
+void obo_metal_exit(void) {
+    if (__obo_metal_depth > 0) __obo_metal_depth--;
+    if (__obo_metal_depth == 0) __obo_gc_paused = 0;
+}
+
 static void obo_gc_register_impl(void* ptr, int kind) {
     if (!ptr) return;
     /* In no-gc mode (paused), skip registration entirely — allocations freed at exit. */

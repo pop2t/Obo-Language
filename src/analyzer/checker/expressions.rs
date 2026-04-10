@@ -237,10 +237,24 @@ impl Checker {
                             .with_hint("Wrap this code in a metal { } block to use Arena."),
                         );
                     }
+
                 }
                 if let Expr::MemberAccess(obj, _, _) = callee.as_ref() {
                     if let Expr::Identifier(name, _) = obj.as_ref() {
                         self.symbols.mark_used(name);
+                        // pointer.* and mem.* are metal-only (use memo.* for the new API)
+                        if (name == "pointer" || name == "mem") && !self.in_metal {
+                            self.errors.push(
+                                OboError::new(
+                                    ErrorKind::InvalidOperation,
+                                    format!("'{}.{}' is only allowed inside metal blocks", name, {
+                                        if let Expr::MemberAccess(_, method, _) = callee.as_ref() { method.as_str() } else { "?" }
+                                    }),
+                                    *span,
+                                )
+                                .with_hint("Wrap this code in a metal { } block, or use the memo.* API."),
+                            );
+                        }
                     }
                 }
                 for arg in args {
@@ -295,19 +309,21 @@ impl Checker {
                 OboType::Unknown
             }
 
-            Expr::MemberAccess(object, member, _) => {
+            Expr::MemberAccess(object, member, _span) => {
                 if let Expr::Identifier(name, _) = object.as_ref() {
                     self.symbols.mark_used(name);
                 }
                 let obj_type = self.infer_expr_type(object);
                 match &obj_type {
-                    OboType::Text => match member.as_str() {
-                        "length" | "count" => OboType::Number,
-                        "upper" | "lower" | "trim" => OboType::Text,
-                        "contains" | "startsWith" | "endsWith" => OboType::Flag,
-                        "split" => OboType::List(Box::new(OboType::Text)),
-                        _ => OboType::Unknown,
-                    },
+                    OboType::Text => {
+                        match member.as_str() {
+                            "length" | "count" => OboType::Number,
+                            "upper" | "lower" | "trim" => OboType::Text,
+                            "contains" | "startsWith" | "endsWith" => OboType::Flag,
+                            "split" => OboType::List(Box::new(OboType::Text)),
+                            _ => OboType::Unknown,
+                        }
+                    }
                     OboType::List(_) => match member.as_str() {
                         "count" => OboType::Number,
                         "first" | "last" => OboType::Unknown,
@@ -326,7 +342,7 @@ impl Checker {
                 OboType::Unknown
             }
 
-            Expr::ListLiteral(elements, _) => {
+            Expr::ListLiteral(elements, _span) => {
                 if elements.is_empty() {
                     return OboType::List(Box::new(OboType::Unknown));
                 }
@@ -337,7 +353,7 @@ impl Checker {
                 OboType::List(Box::new(first_type))
             }
 
-            Expr::MapLiteral(pairs, _) => {
+            Expr::MapLiteral(pairs, _span) => {
                 if pairs.is_empty() {
                     return OboType::Map(
                         Box::new(OboType::Unknown),
@@ -366,17 +382,6 @@ impl Checker {
                                 info.defined_at,
                                 "deprecated type defined here".to_string(),
                             ),
-                        );
-                    }
-                    // Metal boundary: only packed entities allowed in metal blocks
-                    if self.in_metal && !info.is_packed {
-                        self.errors.push(
-                            OboError::new(
-                                ErrorKind::InvalidOperation,
-                                format!("Can't create '{}' inside a metal block — only packed entities allowed here", name),
-                                *span,
-                            )
-                            .with_hint("Use 'packed entity' for types that need to live in metal blocks".to_string()),
                         );
                     }
                     let is_actor = matches!(info.kind, TypeInfoKind::Actor { .. });
@@ -495,7 +500,7 @@ impl Checker {
                 }
             }
 
-            Expr::Action(params, body, _) => {
+            Expr::Action(params, body, _span) => {
                 self.symbols.push_scope();
                 for p in params {
                     let ty = p
@@ -511,7 +516,7 @@ impl Checker {
                 OboType::Unknown
             }
 
-            Expr::ArrowAction(params, body, _) => {
+            Expr::ArrowAction(params, body, _span) => {
                 self.symbols.push_scope();
                 for p in params {
                     let ty = p
@@ -545,11 +550,33 @@ impl Checker {
                 }
                 OboType::List(Box::new(OboType::Number))
             }
-            Expr::Run(expr, _) => {
+            Expr::Run(expr, span) => {
+                if self.in_metal {
+                    self.errors.push(
+                        OboError::new(
+                            ErrorKind::InvalidOperation,
+                            "run (async tasks) can't be used inside metal blocks",
+                            *span,
+                        )
+                        .with_hint("Move async operations outside the metal block."),
+                    );
+                }
                 self.infer_expr_type(expr);
                 OboType::Task
             }
-            Expr::ChannelCreate(_) => OboType::Unknown,
+            Expr::ChannelCreate(span) => {
+                if self.in_metal {
+                    self.errors.push(
+                        OboError::new(
+                            ErrorKind::InvalidOperation,
+                            "Channels are GC-tracked — can't create them inside metal blocks",
+                            *span,
+                        )
+                        .with_hint("Create channels outside the metal block."),
+                    );
+                }
+                OboType::Unknown
+            }
             Expr::AtomicCreate(_, _) => OboType::Unknown,
             Expr::Pipe(left, right, _) => {
                 self.infer_expr_type(left);
@@ -592,6 +619,75 @@ impl Checker {
                     self.infer_expr_type(input);
                 }
                 OboType::Number // asm returns i64
+            }
+            Expr::MetalExpr(stmts, _) => {
+                let was_metal = self.in_metal;
+                self.in_metal = true;
+                self.symbols.push_scope();
+                self.check_statements(stmts);
+                self.symbols.pop_scope();
+                self.in_metal = was_metal;
+                OboType::Unknown // type inferred from out value
+            }
+            Expr::MemoStore { value, address, span, .. } => {
+                if !self.in_metal {
+                    self.errors.push(
+                        OboError::new(
+                            ErrorKind::InvalidOperation,
+                            "memo.drop is only allowed inside metal blocks",
+                            *span,
+                        )
+                        .with_hint("Wrap this code in a metal { } block to use memo operations."),
+                    );
+                }
+                self.infer_expr_type(value);
+                self.infer_expr_type(address);
+                OboType::Void
+            }
+            Expr::MemoLoad { address, span, width, .. } => {
+                if !self.in_metal {
+                    self.errors.push(
+                        OboError::new(
+                            ErrorKind::InvalidOperation,
+                            "memo.grab is only allowed inside metal blocks",
+                            *span,
+                        )
+                        .with_hint("Wrap this code in a metal { } block to use memo operations."),
+                    );
+                }
+                self.infer_expr_type(address);
+                match width {
+                    8 => OboType::Byte,
+                    _ => OboType::Number,
+                }
+            }
+            Expr::MemoReserve(size, span) => {
+                if !self.in_metal {
+                    self.errors.push(
+                        OboError::new(
+                            ErrorKind::InvalidOperation,
+                            "memo.reserve is only allowed inside metal blocks",
+                            *span,
+                        )
+                        .with_hint("Wrap this code in a metal { } block to use memo operations."),
+                    );
+                }
+                self.infer_expr_type(size);
+                OboType::Number // returns a cursor (pointer address as i64)
+            }
+            Expr::MemoClean(addr, span) => {
+                if !self.in_metal {
+                    self.errors.push(
+                        OboError::new(
+                            ErrorKind::InvalidOperation,
+                            "memo.clean is only allowed inside metal blocks",
+                            *span,
+                        )
+                        .with_hint("Wrap this code in a metal { } block to use memo operations."),
+                    );
+                }
+                self.infer_expr_type(addr);
+                OboType::Void
             }
         }
     }

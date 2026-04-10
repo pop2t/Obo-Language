@@ -702,7 +702,7 @@ impl Interpreter {
     /// Execute a metal or safe block, collecting defer statements and running
     /// them in LIFO order on exit (normal or early signal like Out/Stop).
     /// Also tracks `own` variables for auto-free at scope exit.
-    fn exec_metal_or_safe_block(&mut self, stmts: &[Statement]) -> Result<Signal, String> {
+    pub(super) fn exec_metal_or_safe_block(&mut self, stmts: &[Statement]) -> Result<Signal, String> {
         let mut defers: Vec<&Vec<Statement>> = Vec::new();
         let mut owned_vars: Vec<String> = Vec::new();
         let mut result_signal = Signal::None;

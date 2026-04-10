@@ -8,7 +8,7 @@ pub mod convert;
 use crate::interpreter::value::Value;
 
 /// System actor names that are accessible globally without `use`.
-pub const SYSTEM_ACTORS: &[&str] = &["Math", "Time", "File", "Convert", "pointer", "mem"];
+pub const SYSTEM_ACTORS: &[&str] = &["Math", "Time", "File", "Convert", "pointer", "mem", "memo"];
 
 /// Resolve a system actor member access like `Math.pi`
 pub fn system_member(actor: &str, member: &str) -> Option<Value> {
@@ -41,6 +41,13 @@ pub fn system_call(actor: &str, method: &str, args: &[Value]) -> Option<Result<V
                 Err("Obo: mem operations require native compilation — use 'obo build' 🔧".into())
             }
             _ => Err(format!("Obo: mem doesn't have '{}' 🤨", method)),
+        }),
+        "memo" => Some(match method {
+            "reserve" | "clean" | "grab8" | "grab16" | "grab32" | "grab64"
+            | "drop8" | "drop16" | "drop32" | "drop64" => {
+                Err("Obo: memo operations require native compilation — use 'obo build' 🔧".into())
+            }
+            _ => Err(format!("Obo: memo doesn't have '{}' — try reserve, clean, grab8/16/32/64, or drop8/16/32/64 🤨", method)),
         }),
         _ => None,
     }

@@ -25,7 +25,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
-const VERSION: &str = "0.6.0";
+const VERSION: &str = "0.7.0";
 
 fn main() {
     let args: Vec<String> = env::args().collect();

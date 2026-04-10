@@ -80,6 +80,7 @@ impl AstPrinter {
             if f.is_public { "public " } else { "" },
             if f.is_static { "shared " } else { "" },
             if f.is_abstract { "template " } else { "" },
+            if f.is_metal { "metal " } else { "" },
         ]
         .concat();
 
@@ -523,6 +524,13 @@ impl AstPrinter {
                 let p: Vec<String> = parts.iter().map(|e| self.print_expr_inline(e)).collect();
                 format!("interp({})", p.join(", "))
             }
+            Expr::MetalExpr(_, _) => {
+                "metal { ... }".to_string()
+            }
+            Expr::MemoStore { width, .. } => format!("memo.drop{}(...)", width),
+            Expr::MemoLoad { width, .. } => format!("memo.grab{}(...)", width),
+            Expr::MemoReserve(_, _) => "memo.reserve(...)".to_string(),
+            Expr::MemoClean(_, _) => "memo.clean(...)".to_string(),
         }
     }
 }

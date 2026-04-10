@@ -10,6 +10,9 @@ impl Parser {
         let is_sealed = self.match_token(TokenKind::KwSealed);
         let is_system = self.match_token(TokenKind::KwSystem);
         let is_static = self.match_token(TokenKind::KwStatic);
+        let is_metal_fn = self.peek_kind() == TokenKind::KwMetal
+            && self.peek_at_kind(1) == TokenKind::KwFunction;
+        if is_metal_fn { self.advance(); } // consume 'metal' before 'function'
 
         if self.peek_kind() == TokenKind::Identifier && self.peek_lexeme() == "value" {
                 // value TypeName { x as f32; y as f32; }
@@ -54,6 +57,7 @@ impl Parser {
                 f.is_public = is_public;
                 f.is_static = is_static;
                 f.is_abstract = is_abstract;
+                f.is_metal = is_metal_fn;
                 f.doc_comments = doc_comments;
                 f.attributes = attributes;
                 Ok(Declaration::Function(f))
@@ -134,6 +138,7 @@ impl Parser {
                 is_public: false,
                 is_static: false,
                 is_abstract: true,
+                is_metal: false,
                 doc_comments: Vec::new(),
                 attributes: Vec::new(),
                 span,
@@ -149,6 +154,7 @@ impl Parser {
             is_public: false,
             is_static: false,
             is_abstract: false,
+            is_metal: false,
             doc_comments: Vec::new(),
             attributes: Vec::new(),
             span,

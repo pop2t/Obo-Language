@@ -65,6 +65,16 @@ fn collect_free_vars_expr(expr: &ast::Expr, out: &mut HashSet<String>) {
         ast::Expr::InlineAsm(_, _, inputs, _) => {
             for e in inputs { collect_free_vars_expr(e, out); }
         }
+        ast::Expr::MetalExpr(stmts, _) => {
+            for s in stmts { collect_free_vars_stmt(s, out); }
+        }
+        ast::Expr::MemoReserve(size, _) => collect_free_vars_expr(size, out),
+        ast::Expr::MemoClean(addr, _) => collect_free_vars_expr(addr, out),
+        ast::Expr::MemoLoad { address, .. } => collect_free_vars_expr(address, out),
+        ast::Expr::MemoStore { value, address, .. } => {
+            collect_free_vars_expr(value, out);
+            collect_free_vars_expr(address, out);
+        }
         ast::Expr::Cast(_, e, _) => collect_free_vars_expr(e, out),
         ast::Expr::Action(_, body, _) => {
             for s in body { collect_free_vars_stmt(s, out); }
@@ -165,11 +175,20 @@ pub struct Lowering {
     gen_consumer: Option<(String, Vec<ast::Statement>)>,
     /// Current source line being lowered (1-based, 0 = unknown).
     current_line: u32,
+    /// Stack of metal expression contexts for `value = metal { out x; }` lowering.
+    metal_expr_stack: Vec<MetalExprContext>,
+    /// Whether the current function being lowered is a metal function.
+    in_metal_fn: bool,
 }
 
 struct LoopContext {
     continue_block: BlockId,
     break_block: BlockId,
+}
+
+struct MetalExprContext {
+    result_var: String,
+    exit_block: BlockId,
 }
 
 impl Lowering {
@@ -198,6 +217,8 @@ impl Lowering {
             function_bodies: HashMap::new(),
             gen_consumer: None,
             current_line: 0,
+            metal_expr_stack: Vec::new(),
+            in_metal_fn: false,
         }
     }
 
@@ -414,6 +435,7 @@ impl Lowering {
                                     is_public: p.is_public,
                                     is_abstract: false,
                                     is_static: false,
+                                    is_metal: false,
                                     doc_comments: vec![],
                                     attributes: vec![],
                                     span: p.span,
@@ -438,6 +460,7 @@ impl Lowering {
                                     is_public: p.is_public,
                                     is_abstract: false,
                                     is_static: false,
+                                    is_metal: false,
                                     doc_comments: vec![],
                                     attributes: vec![],
                                     span: p.span,
@@ -552,9 +575,21 @@ impl Lowering {
             self.emit(Inst::Store(p.clone(), Operand::Reg(reg)));
         }
 
+        // Enter metal mode for metal functions
+        if f.is_metal {
+            let r = self.fresh_reg();
+            self.emit(Inst::Call(r, "obo_metal_enter".to_string(), vec![]));
+        }
+        self.in_metal_fn = f.is_metal;
+
         self.lower_statements(&f.body);
 
         if !self.current().is_terminated() {
+            // Exit metal mode before return
+            if f.is_metal {
+                let r = self.fresh_reg();
+                self.emit(Inst::Call(r, "obo_metal_exit".to_string(), vec![]));
+            }
             self.emit(Inst::Return(Vec::new()));
         }
 
@@ -778,7 +813,21 @@ impl Lowering {
 
             ast::Statement::Out(o) => {
                 let vals: Vec<Operand> = o.values.iter().map(|e| self.lower_expr(e)).collect();
-                self.emit(Inst::Return(vals));
+                if let Some(mctx) = self.metal_expr_stack.last() {
+                    // Inside a metal expression: store result and jump to exit block
+                    let val = vals.into_iter().next().unwrap_or(Operand::Const(Constant::Null));
+                    let exit = mctx.exit_block;
+                    let var = mctx.result_var.clone();
+                    self.emit(Inst::Store(var, val));
+                    self.emit(Inst::Jump(exit));
+                } else {
+                    // Exit metal mode before returning from a metal function
+                    if self.in_metal_fn {
+                        let r = self.fresh_reg();
+                        self.emit(Inst::Call(r, "obo_metal_exit".to_string(), vec![]));
+                    }
+                    self.emit(Inst::Return(vals));
+                }
             }
 
             ast::Statement::Stop(_) => {
@@ -866,6 +915,14 @@ impl Lowering {
             }
 
             ast::Statement::SafeBlock(stmts, _) | ast::Statement::MetalBlock(stmts, _) => {
+                let is_metal = matches!(stmt, ast::Statement::MetalBlock(..));
+
+                // Emit obo_metal_enter at metal block entry
+                if is_metal {
+                    let r = self.fresh_reg();
+                    self.emit(Inst::Call(r, "obo_metal_enter".to_string(), vec![]));
+                }
+
                 // Separate defer bodies from regular statements, track owned vars
                 let mut regular: Vec<&ast::Statement> = Vec::new();
                 let mut defers: Vec<&Vec<ast::Statement>> = Vec::new();
@@ -918,6 +975,12 @@ impl Lowering {
                         let free_reg = self.fresh_reg();
                         self.emit(Inst::Call(free_reg, "__sys_pointer_free".to_string(), vec![Operand::Reg(ptr_reg)]));
                     }
+                }
+
+                // Emit obo_metal_exit at metal block exit
+                if is_metal && !self.current().is_terminated() {
+                    let r = self.fresh_reg();
+                    self.emit(Inst::Call(r, "obo_metal_exit".to_string(), vec![]));
                 }
             }
 
@@ -2049,6 +2112,131 @@ impl Lowering {
                 }
                 let dst = self.fresh_reg();
                 self.emit(Inst::InlineAsm(dst, template.clone(), constraints.clone(), input_ops));
+                Operand::Reg(dst)
+            }
+
+            ast::Expr::MetalExpr(stmts, _) => {
+                // Metal expression: execute block, capture `out` value.
+                // 1. Create a temp variable and exit block
+                let result_var = format!("__metal_expr_{}", self.next_reg);
+                self.next_reg += 1;
+                let exit_block = self.new_block();
+
+                // Initialize result var to null (in case no out is reached)
+                self.emit(Inst::Store(result_var.clone(), Operand::Const(Constant::Null)));
+
+                // Enter metal mode (pause GC)
+                let me = self.fresh_reg();
+                self.emit(Inst::Call(me, "obo_metal_enter".to_string(), vec![]));
+
+                // 2. Push metal expression context so `out` becomes store+jump
+                self.metal_expr_stack.push(MetalExprContext {
+                    result_var: result_var.clone(),
+                    exit_block,
+                });
+
+                // 3. Lower the block body (same as MetalBlock statement, with defers)
+                let mut regular: Vec<&ast::Statement> = Vec::new();
+                let mut defers: Vec<&Vec<ast::Statement>> = Vec::new();
+                let mut owned_vars: Vec<String> = Vec::new();
+                for s in stmts {
+                    if let ast::Statement::Defer(body, _) = s {
+                        defers.push(body);
+                    } else {
+                        if let ast::Statement::VarDecl(v) = s {
+                            if matches!(&v.initializer, ast::Expr::Own(_, _)) {
+                                owned_vars.push(v.name.clone());
+                            }
+                        }
+                        if let ast::Statement::Assignment(a) = s {
+                            if matches!(&a.value, ast::Expr::Own(_, _)) {
+                                if let ast::Expr::Identifier(name, _) = &a.target {
+                                    owned_vars.push(name.clone());
+                                }
+                            }
+                        }
+                        regular.push(s);
+                    }
+                }
+
+                for s in &regular {
+                    self.lower_statement(s);
+                    if self.current().is_terminated() {
+                        break;
+                    }
+                }
+
+                // Lower defers in reverse (LIFO) — only if current block not terminated
+                if !self.current().is_terminated() {
+                    for defer_body in defers.iter().rev() {
+                        self.lower_statements(defer_body);
+                        if self.current().is_terminated() {
+                            break;
+                        }
+                    }
+                }
+
+                // Free owned vars
+                if !self.current().is_terminated() {
+                    for var_name in owned_vars.iter().rev() {
+                        let ptr_reg = self.fresh_reg();
+                        self.emit(Inst::Load(ptr_reg, var_name.clone()));
+                        let free_reg = self.fresh_reg();
+                        self.emit(Inst::Call(free_reg, "__sys_pointer_free".to_string(), vec![Operand::Reg(ptr_reg)]));
+                    }
+                }
+
+                // Fall through to exit block if not already jumped
+                if !self.current().is_terminated() {
+                    self.emit(Inst::Jump(exit_block));
+                }
+
+                // 4. Pop context, switch to exit block, exit metal mode, load result
+                self.metal_expr_stack.pop();
+                self.set_current(exit_block);
+                let mx = self.fresh_reg();
+                self.emit(Inst::Call(mx, "obo_metal_exit".to_string(), vec![]));
+                let dst = self.fresh_reg();
+                self.emit(Inst::Load(dst, result_var));
+                Operand::Reg(dst)
+            }
+
+            ast::Expr::MemoReserve(size_expr, _) => {
+                let size_op = self.lower_expr(size_expr);
+                let dst = self.fresh_reg();
+                self.emit(Inst::Call(dst, "__sys_pointer_alloc".to_string(), vec![size_op]));
+                Operand::Reg(dst)
+            }
+
+            ast::Expr::MemoClean(addr_expr, _) => {
+                let addr_op = self.lower_expr(addr_expr);
+                let dst = self.fresh_reg();
+                self.emit(Inst::Call(dst, "__sys_pointer_free".to_string(), vec![addr_op]));
+                Operand::Reg(dst)
+            }
+
+            ast::Expr::MemoLoad { width, address, .. } => {
+                let addr_op = self.lower_expr(address);
+                let dst = self.fresh_reg();
+                let fn_name = match width {
+                    8 => "__sys_mem_load8",
+                    16 | 32 => "__sys_mem_load32",
+                    _ => "__sys_mem_load64",
+                };
+                self.emit(Inst::Call(dst, fn_name.to_string(), vec![addr_op]));
+                Operand::Reg(dst)
+            }
+
+            ast::Expr::MemoStore { width, value, address, .. } => {
+                let val_op = self.lower_expr(value);
+                let addr_op = self.lower_expr(address);
+                let dst = self.fresh_reg();
+                let fn_name = match width {
+                    8 => "__sys_mem_store8",
+                    16 | 32 => "__sys_mem_store32",
+                    _ => "__sys_mem_store64",
+                };
+                self.emit(Inst::Call(dst, fn_name.to_string(), vec![addr_op, val_op]));
                 Operand::Reg(dst)
             }
         }

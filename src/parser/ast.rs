@@ -32,6 +32,7 @@ pub struct FunctionDecl {
     pub is_public: bool,
     pub is_static: bool,
     pub is_abstract: bool,
+    pub is_metal: bool,
     pub doc_comments: Vec<String>,
     pub attributes: Vec<Attribute>,
     pub span: Span,
@@ -452,6 +453,23 @@ pub enum Expr {
     InlineAsm(String, String, Vec<Expr>, Span),
 
     Interpolation(Vec<Expr>, Span),
+
+    /// Metal expression: `value = metal { ... out x; };`
+    /// Executes a metal block and yields the value from `out`.
+    MetalExpr(Vec<Statement>, Span),
+
+    /// memo.dropN(value at address) — write N bits to memory (metal-only)
+    /// width is 8, 16, 32, or 64
+    MemoStore { width: u8, value: Box<Expr>, address: Box<Expr>, span: Span },
+
+    /// memo.grabN(at address) — read N bits from memory (metal-only)
+    MemoLoad { width: u8, address: Box<Expr>, span: Span },
+
+    /// memo.reserve(size) — allocate size bytes (metal-only)
+    MemoReserve(Box<Expr>, Span),
+
+    /// memo.clean(cursor) — free memory (metal-only)
+    MemoClean(Box<Expr>, Span),
 }
 
 impl Expr {
@@ -487,6 +505,11 @@ impl Expr {
             Expr::Own(_, s) => *s,
             Expr::InlineAsm(_, _, _, s) => *s,
             Expr::Interpolation(_, s) => *s,
+            Expr::MetalExpr(_, s) => *s,
+            Expr::MemoStore { span, .. } => *span,
+            Expr::MemoLoad { span, .. } => *span,
+            Expr::MemoReserve(_, s) => *s,
+            Expr::MemoClean(_, s) => *s,
         }
     }
 }

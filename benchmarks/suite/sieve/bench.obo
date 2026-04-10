@@ -2,29 +2,26 @@
 /// Tests: raw memory allocation, byte-level mem intrinsics, --no-gc
 /// Uses pointer.alloc + mem.store8/load8 for C-equivalent performance
 
-function main()
+metal function main()
 {
     n = 10000000;
     buf = pointer.alloc(n);
 
-    // Initialize all to 1 (prime candidate)
-    count(i = 0, n)
-    {
-        mem.store8(buf + i, 1);
-    }
-    mem.store8(buf, 0);
-    mem.store8(buf + 1, 0);
+    // Initialize all to 0 (prime candidate) using SIMD-optimized mem.zero
+    mem.zero(buf, n);
+    mem.store8(buf, 1);
+    mem.store8(buf + 1, 1);
 
-    // Sieve
+    // Sieve — 0 = prime candidate, 1 = composite
     i = 2;
     while (i * i < n)
     {
-        if (mem.load8(buf + i) == 1)
+        if (mem.load8(buf + i) == 0)
         {
             j = i * i;
             while (j < n)
             {
-                mem.store8(buf + j, 0);
+                mem.store8(buf + j, 1);
                 j = j + i;
             }
         }
@@ -35,7 +32,7 @@ function main()
     total = 0;
     count(i = 0, n)
     {
-        if (mem.load8(buf + i) == 1)
+        if (mem.load8(buf + i) == 0)
         {
             total = total + 1;
         }

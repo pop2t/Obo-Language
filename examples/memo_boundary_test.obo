@@ -1,0 +1,29 @@
+/// Test metal boundary enforcement — these should produce errors
+
+function main()
+{
+    // ERROR: memo.* outside metal
+    // buf = memo.reserve(64);
+
+    // ERROR: list inside metal
+    // metal { items = [1, 2, 3]; }
+
+    // ERROR: map inside metal
+    // metal { m = ["a": 1]; }
+
+    // safe inside metal should allow GC types
+    metal
+    {
+        x = 42;
+        safe
+        {
+            items = [1, 2, 3];
+            show "Safe: {items.count}";
+        }
+        show "Metal: {x}";
+    }
+
+    show "Boundary test passed!";
+}
+
+main;

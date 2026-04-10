@@ -32,6 +32,12 @@ impl Checker {
         self.current_function = Some(f.name.clone());
         self.symbols.push_scope();
 
+        // metal function → entire body is metal context
+        let was_metal = self.in_metal;
+        if f.is_metal {
+            self.in_metal = true;
+        }
+
         for param in &f.params {
             let ty = param
                 .type_annotation
@@ -47,6 +53,7 @@ impl Checker {
         let locals = self.symbols.pop_scope();
         self.check_unused_variables(&locals);
 
+        self.in_metal = was_metal;
         self.current_function = None;
     }
 

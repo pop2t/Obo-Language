@@ -2,7 +2,7 @@
 # ═══════════════════════════════════════════════════════════════════
 # OBO Benchmark Suite — hyperfine-based cross-language comparison
 # Benchmarks: fibonacci, binary_trees, nbody, map_stress, database_heavy
-# Languages:  OBO Native (LLVM), OBO Interpreter, C# (.NET 8), Node.js, C++, Rust
+# Languages:  OBO (--runtime obo), OBO no_gc (--runtime obo --no-gc), C# (.NET 8), Node.js, C++, Rust, Go, Zig, Java
 # ═══════════════════════════════════════════════════════════════════
 
 set -e
@@ -29,13 +29,16 @@ echo ""
 
 # ── Detect available toolchains ──────────────────────────
 
-HAS_OBO=0; HAS_CSHARP=0; HAS_NODE=0; HAS_CPP=0; HAS_RUST=0; HAS_HYPERFINE=0
+HAS_OBO=0; HAS_CSHARP=0; HAS_NODE=0; HAS_CPP=0; HAS_RUST=0; HAS_GO=0; HAS_ZIG=0; HAS_JAVA=0; HAS_HYPERFINE=0
 
 command -v obo &>/dev/null && HAS_OBO=1
 command -v dotnet &>/dev/null && HAS_CSHARP=1
 command -v node &>/dev/null && HAS_NODE=1
 command -v g++ &>/dev/null && HAS_CPP=1
 command -v rustc &>/dev/null && HAS_RUST=1
+command -v go &>/dev/null && HAS_GO=1
+command -v zig &>/dev/null && HAS_ZIG=1
+command -v javac &>/dev/null && HAS_JAVA=1
 command -v hyperfine &>/dev/null && HAS_HYPERFINE=1
 
 echo -e "${CYAN}Toolchain check:${NC}"
@@ -44,6 +47,9 @@ echo -e "${CYAN}Toolchain check:${NC}"
 [ "$HAS_NODE" = "1" ] && echo -e "  node:      ${GREEN}$(node --version 2>&1)${NC}" || echo -e "  node:      ${RED}not found${NC}"
 [ "$HAS_CPP" = "1" ] && echo -e "  g++:       ${GREEN}$(g++ --version 2>&1 | head -1)${NC}" || echo -e "  g++:       ${RED}not found${NC}"
 [ "$HAS_RUST" = "1" ] && echo -e "  rustc:     ${GREEN}$(rustc --version 2>&1)${NC}" || echo -e "  rustc:     ${RED}not found${NC}"
+[ "$HAS_GO" = "1" ] && echo -e "  go:        ${GREEN}$(go version 2>&1)${NC}" || echo -e "  go:        ${RED}not found${NC}"
+[ "$HAS_ZIG" = "1" ] && echo -e "  zig:       ${GREEN}$(zig version 2>&1)${NC}" || echo -e "  zig:       ${RED}not found${NC}"
+[ "$HAS_JAVA" = "1" ] && echo -e "  javac:     ${GREEN}$(javac -version 2>&1)${NC}" || echo -e "  javac:     ${RED}not found${NC}"
 [ "$HAS_HYPERFINE" = "1" ] && echo -e "  hyperfine: ${GREEN}$(hyperfine --version 2>&1)${NC}" || echo -e "  hyperfine: ${RED}not found (using fallback timing)${NC}"
 echo ""
 
@@ -94,20 +100,20 @@ outputs_match() {
 for bench in "${BENCHMARKS[@]}"; do
     echo -e "  ${BOLD}$bench${NC}"
 
-    # OBO Native (C runtime)
+    # OBO (self-hosted runtime, GC enabled)
     if [ "$HAS_OBO" = "1" ]; then
-        echo -n "    OBO Native... "
-        if obo build "$SUITE_DIR/$bench/bench.obo" -o "$BUILD_DIR/${bench}_obo" 2>/dev/null; then
+        echo -n "    OBO... "
+        if obo build "$SUITE_DIR/$bench/bench.obo" --runtime obo -o "$BUILD_DIR/${bench}_obo" 2>/dev/null; then
             echo -e "${GREEN}OK${NC}"
         else
             echo -e "${RED}FAIL${NC}"
         fi
     fi
 
-    # OBO OBO (self-hosted runtime)
+    # OBO no_gc (self-hosted runtime, GC disabled)
     if [ "$HAS_OBO" = "1" ]; then
-        echo -n "    OBO OBO... "
-        if obo build "$SUITE_DIR/$bench/bench.obo" --runtime obo -o "$BUILD_DIR/${bench}_obo_obo" 2>/dev/null; then
+        echo -n "    OBO no_gc... "
+        if obo build "$SUITE_DIR/$bench/bench.obo" --runtime obo --no-gc -o "$BUILD_DIR/${bench}_obo_nogc" 2>/dev/null; then
             echo -e "${GREEN}OK${NC}"
         else
             echo -e "${RED}FAIL${NC}"
@@ -143,6 +149,37 @@ for bench in "${BENCHMARKS[@]}"; do
             echo -e "${RED}FAIL${NC}"
         fi
     fi
+
+    # Go
+    if [ "$HAS_GO" = "1" ] && [ -f "$SUITE_DIR/$bench/bench.go" ]; then
+        echo -n "    Go... "
+        if go build -o "$BUILD_DIR/${bench}_go" "$SUITE_DIR/$bench/bench.go" 2>/dev/null; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${RED}FAIL${NC}"
+        fi
+    fi
+
+    # Zig
+    if [ "$HAS_ZIG" = "1" ] && [ -f "$SUITE_DIR/$bench/bench.zig" ]; then
+        echo -n "    Zig... "
+        if zig build-exe "$SUITE_DIR/$bench/bench.zig" -O ReleaseFast -femit-bin="$BUILD_DIR/${bench}_zig" 2>/dev/null; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${RED}FAIL${NC}"
+        fi
+    fi
+
+    # Java
+    if [ "$HAS_JAVA" = "1" ] && [ -f "$SUITE_DIR/$bench/Bench.java" ]; then
+        echo -n "    Java... "
+        mkdir -p "$BUILD_DIR/java_$bench"
+        if javac -d "$BUILD_DIR/java_$bench" "$SUITE_DIR/$bench/Bench.java" 2>/dev/null; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${RED}FAIL${NC}"
+        fi
+    fi
 done
 
 echo ""
@@ -165,12 +202,12 @@ run_benchmark() {
 
     if [ "$HAS_OBO" = "1" ] && [ -f "$BUILD_DIR/${bench_name}_obo" ]; then
         cmds+=("$BUILD_DIR/${bench_name}_obo")
-        names+=("OBO Native")
+        names+=("OBO")
     fi
 
-    if [ "$HAS_OBO" = "1" ] && [ -f "$BUILD_DIR/${bench_name}_obo_obo" ]; then
-        cmds+=("$BUILD_DIR/${bench_name}_obo_obo")
-        names+=("OBO OBO")
+    if [ "$HAS_OBO" = "1" ] && [ -f "$BUILD_DIR/${bench_name}_obo_nogc" ]; then
+        cmds+=("$BUILD_DIR/${bench_name}_obo_nogc")
+        names+=("OBO no_gc")
     fi
 
     if [ "$HAS_OBO" = "1" ] && [ "${SKIP_INTERP:-0}" = "0" ]; then
@@ -199,6 +236,21 @@ run_benchmark() {
     if [ "$HAS_RUST" = "1" ] && [ -f "$BUILD_DIR/${bench_name}_rust" ]; then
         cmds+=("$BUILD_DIR/${bench_name}_rust")
         names+=("Rust")
+    fi
+
+    if [ "$HAS_GO" = "1" ] && [ -f "$BUILD_DIR/${bench_name}_go" ]; then
+        cmds+=("$BUILD_DIR/${bench_name}_go")
+        names+=("Go")
+    fi
+
+    if [ "$HAS_ZIG" = "1" ] && [ -f "$BUILD_DIR/${bench_name}_zig" ]; then
+        cmds+=("$BUILD_DIR/${bench_name}_zig")
+        names+=("Zig")
+    fi
+
+    if [ "$HAS_JAVA" = "1" ] && [ -d "$BUILD_DIR/java_${bench_name}" ]; then
+        cmds+=("java -cp $BUILD_DIR/java_${bench_name} Bench")
+        names+=("Java")
     fi
 
     if [ ${#cmds[@]} -eq 0 ]; then

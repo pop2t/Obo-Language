@@ -1,0 +1,22 @@
+// Minimal metal expression test (interpreter-friendly)
+function main() {
+    x = metal {
+        out 42;
+    };
+    show "x = {x}";
+
+    y = metal {
+        a = 10;
+        b = 20;
+        out a + b;
+    };
+    show "y = {y}";
+
+    // Statement form still works
+    metal {
+        show "metal statement";
+    }
+
+    show "done";
+}
+main;

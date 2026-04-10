@@ -1,0 +1,34 @@
+/// Test memo.* API and metal boundary enforcement
+
+function main()
+{
+    show "=== memo.* API test ===";
+
+    metal
+    {
+        buf = memo.reserve(1024);
+        defer { memo.clean(buf); }
+
+        memo.drop8(72 at buf);
+        memo.drop64(42 at buf + 8);
+        value = memo.grab64(at buf + 8);
+        show "Value: {value}";
+
+        first = memo.grab8(at buf);
+        show "First byte: {first}";
+    }
+
+    show "Done!";
+}
+
+/// metal function — entire body is metal context
+metal function alloc_and_write(size, val)
+{
+    ptr = memo.reserve(size);
+    memo.drop64(val at ptr);
+    result = memo.grab64(at ptr);
+    memo.clean(ptr);
+    out result;
+}
+
+main;

@@ -395,6 +395,8 @@ pub fn emit_program(ir: &mut IrProgram, debug: bool, no_gc: bool) -> Result<(Str
     out.push_str("declare void @obo_gc_collect() nounwind\n");
     out.push_str("declare void @obo_gc_pause() nounwind\n");
     out.push_str("declare void @obo_gc_resume() nounwind\n");
+    out.push_str("declare void @obo_metal_enter() nounwind\n");
+    out.push_str("declare void @obo_metal_exit() nounwind\n");
     out.push_str("declare i8* @obo_closure_new(i8*, i64) nounwind\n");
     out.push_str("declare void @obo_closure_set_capture(i8*, i64, i64) nounwind\n");
     out.push_str("declare i64 @obo_closure_get_capture(i8*, i64) nounwind readonly\n");

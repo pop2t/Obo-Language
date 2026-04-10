@@ -144,6 +144,7 @@ impl Formatter {
         if f.is_public { prefix.push_str("public "); }
         if f.is_static { prefix.push_str("shared "); }
         if f.is_abstract && !is_trait_method { prefix.push_str("template "); }
+        if f.is_metal { prefix.push_str("metal "); }
 
         let sig = format!("{}function {}({})", prefix, f.name, self.fmt_params(&f.params));
 
@@ -808,6 +809,16 @@ impl Formatter {
                 result.push('"');
                 result
             }
+
+            Expr::MetalExpr(stmts, _) => {
+                // For inline formatting, just indicate it's a metal expression
+                let _ = stmts;
+                "metal { ... }".to_string()
+            }
+            Expr::MemoStore { width, .. } => format!("memo.drop{}(...)", width),
+            Expr::MemoLoad { width, .. } => format!("memo.grab{}(...)", width),
+            Expr::MemoReserve(_, _) => "memo.reserve(...)".to_string(),
+            Expr::MemoClean(_, _) => "memo.clean(...)".to_string(),
         }
     }
 }

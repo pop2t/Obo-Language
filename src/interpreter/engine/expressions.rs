@@ -274,6 +274,21 @@ impl Interpreter {
             Expr::InlineAsm(_, _, _, _) => {
                 Err("inline assembly is not supported in interpreter mode — use native compilation".into())
             }
+            Expr::MetalExpr(stmts, _) => {
+                self.env.push_scope();
+                let signal = self.exec_metal_or_safe_block(stmts)?;
+                self.env.pop_scope();
+                match signal {
+                    Signal::Out(values) => {
+                        Ok(values.into_iter().next().unwrap_or(Value::Null))
+                    }
+                    _ => Ok(Value::Null),
+                }
+            }
+            Expr::MemoReserve(_, _) | Expr::MemoClean(_, _)
+            | Expr::MemoLoad { .. } | Expr::MemoStore { .. } => {
+                Err("memo operations require native compilation — use 'obo build' 🔧".into())
+            }
         }
     }
 
