@@ -21,27 +21,91 @@ function main()
 
 ---
 
-## What is OBO?
+# What is OBO?
 
-OBO is a general-purpose compiled language that closes the gap between **how humans think** and **how code is written**.
+OBO is a developer-first programming language designed around intent, not machine constraints.
 
-It was born from a frustration that many developers share: you open C# or Python and the ideas flow, but the moment you need real performance, you're told to switch to C++. You open C++ and hate everything about it except that it's fast. You go back to Python because it's easier, but then the tabs, the missing semicolons, the indentation bugs and the slowness drive you crazy. You end up needing three languages to go from prototype to production.
+It doesn’t try to fit into existing categories. It is not a scripting language, not a systems language, and not a compromise between the two.
 
-OBO is the language where you don't have to choose. It reads like Python, clean, human, no jargon, but uses braces and semicolons so there are no invisible whitespace bugs. It compiles to native binaries through LLVM and runs at C++/Rust speed. When you need to drop to the metal for a renderer, a physics engine, or an ML framework, you do it in the same file, in the same function, no language switch, no FFI ceremony, no rewrite.
+OBO is a toolbox.
 
-**OBO holds your hand when you want safety, and gets out of your way when you want power.**
-
-It's not a systems language pretending to be friendly. It's not a scripting language pretending to be fast. It's a **toolbox** — a single language where you can write a database engine today, a graphics renderer tomorrow, and a machine learning pipeline next week, all without leaving the ecosystem.
-
-### Who is OBO for?
-
-- **C# developers** who hit performance walls and don't want to learn C++
-- **Python developers** who need native speed without rewriting everything
-- **Rust developers** who want the performance without the learning curve
-- **Creative people and systems designers** , game devs, graphics programmers, physics researchers, tool builders , who need one language that goes from high-level ideas to bare-metal execution
-- **Anyone** who believes programming should feel like writing, not decoding
+A single language where you can explore ideas, build structured systems, drop to low-level control when needed, and ship production code — all without leaving the same environment.
 
 ---
+
+## The Problem OBO Solves
+
+Modern development forces you to split your thinking across multiple languages.
+
+You prototype in Python, structure your application in C#, and rewrite performance-critical parts in C++ or Rust. Each step introduces a new syntax, a new toolchain, and a new mental model. What starts as one idea becomes fragmented across different layers.
+
+OBO removes that split.
+
+You stay in the same language from the first idea to the final optimized system. No rewrites, no bindings, no glue code, no context switching.
+
+---
+
+## A Toolbox, Not a Lane
+
+Most languages force you into a specific way of working.
+
+OBO gives you a workspace instead.
+
+You can write expressive high-level logic, design structured systems, and handle low-level performance-critical code — all in the same project, even in the same file when needed.
+
+The breadth of OBO is not a lack of focus. It is intentional.
+
+OBO is designed for people who experiment, who build across layers, and who don’t want to switch tools every time the problem changes.
+
+---
+
+## One Language, Many Ways to Think
+
+Different developers think differently.
+
+Some prefer high-level abstraction, others want full control over memory and performance, and many move between both depending on the task.
+
+OBO allows all of these approaches to exist in the same codebase.
+
+You don’t need separate languages, wrappers, or APIs to connect them. You work in one language, with one set of concepts, while choosing the level of control that fits the problem.
+
+---
+
+## Code That Reads Like Intent
+
+OBO focuses on clarity and readability without sacrificing structure.
+
+It replaces unnecessary jargon with simple, expressive constructs while keeping explicit syntax through braces and semicolons. You get code that reads naturally, without relying on fragile whitespace rules or hidden behavior.
+
+The goal is not to look like pseudocode — but to feel as direct and understandable as it.
+
+---
+
+## Performance Without Compromise
+
+OBO compiles ahead-of-time to native binaries using LLVM.
+
+There is no interpreter, no virtual machine, and no runtime overhead in the hot path. The same backend used by C++ and Rust powers OBO, allowing it to achieve comparable performance.
+
+You don’t switch languages for speed. You stay where you are and go deeper when needed.
+
+:contentReference[oaicite:0]{index=0}
+
+---
+
+## Why OBO Exists
+
+OBO exists because developers shouldn’t have to choose between ease and performance, or between clarity and control.
+
+It exists for people who prototype, refine, and optimize — and want to do all of that in one place.
+
+It exists for those who think in ideas first, and don’t want their tools to fragment that thinking.
+
+---
+
+## In One Sentence
+
+OBO is a developer-first toolbox language where you can think, build, and optimize — without ever switching languages.
 
 ## Why OBO?
 

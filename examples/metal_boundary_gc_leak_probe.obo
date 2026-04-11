@@ -1,0 +1,43 @@
+function churnStrings(n as number)
+{
+    acc = [];
+    count (i = 0, n)
+    {
+        acc = acc.add("item-" + i);
+    }
+    out acc.count;
+}
+
+function stressUnmanaged(rounds as number, bytes as number)
+{
+    sum = 0;
+    count (i = 0, rounds)
+    {
+        v = metal
+        {
+            p = pointer.alloc(bytes);
+            // Intentionally unmanaged allocation to model leak-prone behavior.
+            mem.store64(p, i);
+            out mem.load64(p);
+        };
+        sum = sum + v;
+    }
+    out sum;
+}
+
+function main()
+{
+    before = churnStrings(1000);
+    assert(before > 0, "pre-churn failed");
+
+    rounds = 1200;
+    bytes = 65536;
+    leakSum = stressUnmanaged(rounds, bytes);
+    assert(leakSum >= 0, "unmanaged stress path failed unexpectedly");
+
+    after = churnStrings(1200);
+    assert(after > 0, "post-churn failed");
+
+    show "LEAK-MODE probe completed (allocations intentionally unmanaged)";
+    show "metal/safe boundary leak probe passed";
+}

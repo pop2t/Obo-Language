@@ -4,11 +4,13 @@ pub mod math;
 pub mod time;
 pub mod filesystem;
 pub mod convert;
+pub mod path;
+pub mod process;
 
 use crate::interpreter::value::Value;
 
 /// System actor names that are accessible globally without `use`.
-pub const SYSTEM_ACTORS: &[&str] = &["Math", "Time", "File", "Convert", "pointer", "mem", "memo"];
+pub const SYSTEM_ACTORS: &[&str] = &["Math", "Time", "File", "Convert", "pointer", "mem", "memo", "Path", "Process"];
 
 /// Resolve a system actor member access like `Math.pi`
 pub fn system_member(actor: &str, member: &str) -> Option<Value> {
@@ -27,6 +29,8 @@ pub fn system_call(actor: &str, method: &str, args: &[Value]) -> Option<Result<V
         "Time" => time::time_call(method, args),
         "File" => filesystem::file_call(method, args),
         "Convert" => convert::convert_call(method, args),
+        "Path" => path::path_call(method, args),
+        "Process" => process::process_call(method, args),
         "pointer" => Some(match method {
             "alloc" => {
                 Err("Obo: pointer.alloc() requires native compilation — use 'obo build' 🔧".into())

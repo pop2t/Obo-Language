@@ -1,0 +1,36 @@
+function main()
+{
+    nums = [1, 2, 3];
+    info = ["a": 1];
+    msg = "hello";
+
+    mutated_list = metal
+    {
+        nums[0] = 99;
+        out nums;
+    };
+
+    list_out = metal
+    {
+        nums2 = nums.add(4);
+        out nums2;
+    };
+
+    map_out = metal
+    {
+        info2 = info.set("b", 2);
+        out info2;
+    };
+
+    text_out = metal
+    {
+        msg = msg + " world";
+        msg = msg.upper;
+        out msg;
+    };
+
+    show "mutated_list first: " + mutated_list[0];
+    show "list_out count: " + list_out.count;
+    show "map_out count: " + map_out.count;
+    show "text_out: " + text_out;
+}

@@ -452,6 +452,15 @@ fn cmd_build(cfg: &cli::BuildArgs) {
         clang.arg("-lpthread");
     }
 
+    // Allow callers (like bag) to inject extra linker/compiler flags.
+    // Example: OBO_CLANG_FLAGS="-framework Metal -framework CoreFoundation"
+    if let Ok(extra_flags) = env::var("OBO_CLANG_FLAGS") {
+        let trimmed = extra_flags.trim();
+        if !trimmed.is_empty() {
+            clang.args(trimmed.split_whitespace());
+        }
+    }
+
     // Write OBO runtime .ll to temp file if using --runtime obo.
     let rt_ll_temp: Option<PathBuf> = if let Some(ref rt_ll_src) = runtime_ll_extra {
         let p = env::temp_dir().join(format!("obo_rt_obo_{}.ll", process::id()));
@@ -924,31 +933,14 @@ fn resolve_imports(
         let module_dir = file_path.parent().unwrap_or(base_dir);
         collect_imports(&module_program, module_dir, visited, imported, errors);
 
-        // Filter to only public/requested symbols if specific imports were requested
+        // Import declarations from the module.
+        // When specific names are requested (use X from module), we still import
+        // ALL functions — the requested function may call internal helpers.
+        // We only filter out top-level statements (side effects).
         for decl in module_program {
-            let dominated = match &decl {
-                Declaration::Statement(_) => true,
-                _ => false,
-            };
-            if dominated {
+            let is_statement = matches!(&decl, Declaration::Statement(_));
+            if is_statement {
                 continue;
-            }
-            if let Some(names) = specific {
-                let decl_name = match &decl {
-                    Declaration::Function(f) => Some(&f.name),
-                    Declaration::Entity(e) => Some(&e.name),
-                    Declaration::Actor(a) => Some(&a.name),
-                    Declaration::Choice(c) => Some(&c.name),
-                    Declaration::Const(c) => Some(&c.name),
-                    _ => None,
-                };
-                if let Some(name) = decl_name {
-                    if !names.contains(name) {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
             }
             imported.push(decl);
         }

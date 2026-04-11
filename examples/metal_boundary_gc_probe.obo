@@ -1,0 +1,94 @@
+function churnStrings(n as number)
+{
+    acc = [];
+    count (i = 0, n)
+    {
+        acc = acc.add("item-" + i);
+    }
+    out acc.count;
+}
+
+function stressManaged(rounds as number, bytes as number)
+{
+    sum = 0;
+    count (i = 0, rounds)
+    {
+        v = metal
+        {
+            p = own pointer.alloc(bytes);
+            mem.store64(p, i);
+            out mem.load64(p);
+        };
+        sum = sum + v;
+    }
+    out sum;
+}
+
+function stressUnmanaged(rounds as number, bytes as number)
+{
+    sum = 0;
+    count (i = 0, rounds)
+    {
+        v = metal
+        {
+            p = pointer.alloc(bytes);
+            // Intentionally no free/own/defer: this models leak-prone metal usage.
+            mem.store64(p, i);
+            out mem.load64(p);
+        };
+        sum = sum + v;
+    }
+    out sum;
+}
+
+function main()
+{
+    seedText = "hello";
+    sharedMap = ["a": 1];
+
+    beforeCount = churnStrings(1200);
+    assert(beforeCount > 0, "safe churn before metal failed");
+
+    metalNum = metal
+    {
+        p = own pointer.alloc(16);
+        mem.store64(p, 123);
+        out mem.load64(p);
+    };
+    assert(metalNum == 123, "metal pointer/mem path failed");
+
+    listOut = metal
+    {
+        local = [1, 2, 3];
+        local = local.add(4);
+        out local;
+    };
+    assert(listOut.count == 4, "list return from metal failed");
+
+    mapOut = metal
+    {
+        sharedMap = sharedMap.set("b", 2);
+        out sharedMap;
+    };
+    assert(mapOut.count == 2, "map return from metal failed");
+
+    textOut = metal
+    {
+        seedText = seedText + "-metal";
+        seedText = seedText.upper;
+        out seedText;
+    };
+    assert(textOut == "HELLO-METAL", "text mutation in metal failed");
+
+    afterCount = churnStrings(1600);
+    assert(afterCount > 0, "safe churn after metal failed");
+
+    rounds = 1200;
+    bytes = 65536;
+    managedSum = stressManaged(rounds, bytes);
+    assert(managedSum >= 0, "managed stress path failed unexpectedly");
+    show "MANAGED-MODE completed (own frees each allocation)";
+
+    // If GC/metal boundaries are broken, one of the assertions above should fail.
+    show "metal/safe boundary probe passed";
+}
